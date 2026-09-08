@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../core/locale/app_strings.dart';
 import '../../core/locale/locale_provider.dart';
 import '../../core/theme/neki_colors.dart';
+import '../../core/theme/theme_provider.dart';
 import 'dua_list_screen.dart';
 import 'dua_provider.dart';
 
@@ -17,7 +18,7 @@ class DuaScreen extends ConsumerWidget {
     final categoriesAsync = ref.watch(duaCategoriesProvider);
     final locale = ref.watch(localeProvider);
     final s = S.of(locale);
-    final hour = DateTime.now().hour;
+    final hour = ref.watch(currentHourProvider);
 
     // Embedded in RecitationsScreen — parent provides gradient/header.
     return Column(
@@ -32,7 +33,7 @@ class DuaScreen extends ConsumerWidget {
               child: CircularProgressIndicator(
                   color: NekiColors.emeraldLight),
             ),
-            error: (_, __) => Center(
+            error: (_, _) => Center(
               child: Text(s.failedToLoad,
                   style: TextStyle(
                     color: NekiColors.adaptiveTextSecondary(hour),

@@ -54,6 +54,10 @@ class S {
   String get searchSurah => isBangla ? 'সূরা খুঁজুন...' : 'Search surah...';
   String get meccan => isBangla ? 'মক্কী' : 'Meccan';
   String get medinan => isBangla ? 'মাদানী' : 'Medinan';
+  String get jumpToAyah => isBangla ? 'আয়াতে যান' : 'Jump to Ayah';
+  String get jumpAndPlay => isBangla ? 'যান ও চালান' : 'Jump & Play';
+  String get quickJumpCheckpoints => isBangla ? 'গুরুত্বপূর্ণ আয়াত' : 'Quick Jump Checkpoints';
+  String get slideToScrub => isBangla ? 'টেনে আয়াতে যান' : 'Slide to Scrub';
 
   // ── Dua ──
   String get duasTitle =>

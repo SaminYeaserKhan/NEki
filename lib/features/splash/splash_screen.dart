@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:math';
 
 import 'package:flutter/material.dart';
@@ -21,6 +22,7 @@ class _SplashScreenState extends State<SplashScreen>
   late AnimationController _mainController;
   late AnimationController _particleController;
   late AnimationController _pulseController;
+  Timer? _splashTimer;
 
   late Animation<double> _bgOpacity;
   late Animation<double> _imageScale;
@@ -106,11 +108,14 @@ class _SplashScreenState extends State<SplashScreen>
     _mainController.forward();
 
     // Navigate after splash
-    Future.delayed(const Duration(milliseconds: 3500), widget.onComplete);
+    _splashTimer = Timer(const Duration(milliseconds: 3500), () {
+      if (mounted) widget.onComplete();
+    });
   }
 
   @override
   void dispose() {
+    _splashTimer?.cancel();
     _mainController.dispose();
     _particleController.dispose();
     _pulseController.dispose();

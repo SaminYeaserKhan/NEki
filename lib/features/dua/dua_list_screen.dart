@@ -4,6 +4,7 @@ import 'package:google_fonts/google_fonts.dart';
 
 import '../../core/locale/locale_provider.dart';
 import '../../core/theme/neki_colors.dart';
+import '../../core/theme/theme_provider.dart';
 import '../../core/widgets/animated_gradient_bg.dart';
 import 'dua_detail_screen.dart';
 import 'dua_provider.dart';
@@ -18,7 +19,7 @@ class DuaListScreen extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final duasAsync = ref.watch(duasByCategoryProvider(categoryId));
     final locale = ref.watch(localeProvider);
-    final hour = DateTime.now().hour;
+    final hour = ref.watch(currentHourProvider);
 
     // Get category display name
     final categoriesAsync = ref.watch(duaCategoriesProvider);
@@ -78,7 +79,7 @@ class DuaListScreen extends ConsumerWidget {
                     child: CircularProgressIndicator(
                         color: NekiColors.emeraldLight),
                   ),
-                  error: (_, __) => const Center(
+                  error: (_, _) => const Center(
                     child: Text('Failed to load duas.',
                         style: TextStyle(
                           color: Colors.white70,

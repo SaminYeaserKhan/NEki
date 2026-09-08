@@ -117,6 +117,36 @@ final surahListProvider = Provider<List<SurahInfo>>((ref) {
   });
 });
 
+class JuzInfo {
+  final int number;
+  final int startSurahNumber;
+  final String startSurahName;
+  final int startVerse;
+
+  const JuzInfo({
+    required this.number,
+    required this.startSurahNumber,
+    required this.startSurahName,
+    required this.startVerse,
+  });
+}
+
+final juzListProvider = Provider<List<JuzInfo>>((ref) {
+  return List.generate(30, (index) {
+    final juzNum = index + 1;
+    final map = quran.getSurahAndVersesFromJuz(juzNum);
+    final firstSurah = map.keys.isNotEmpty ? map.keys.first : 1;
+    final firstVerse = map[firstSurah]?.isNotEmpty == true ? map[firstSurah]!.first : 1;
+    return JuzInfo(
+      number: juzNum,
+      startSurahNumber: firstSurah,
+      startSurahName: quran.getSurahName(firstSurah),
+      startVerse: firstVerse,
+    );
+  });
+});
+
+
 // ─────────────────────────────────────────────────────
 //  Audio player management
 // ─────────────────────────────────────────────────────

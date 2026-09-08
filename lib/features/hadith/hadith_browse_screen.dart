@@ -5,6 +5,7 @@ import 'package:google_fonts/google_fonts.dart';
 import '../../core/locale/app_strings.dart';
 import '../../core/locale/locale_provider.dart';
 import '../../core/theme/neki_colors.dart';
+import '../../core/theme/theme_provider.dart';
 import '../../core/widgets/animated_gradient_bg.dart';
 import 'hadith_detail_screen.dart';
 import 'hadith_provider.dart';
@@ -20,7 +21,7 @@ class HadithBrowseScreen extends ConsumerWidget {
     final sectionsAsync = ref.watch(hadithSectionsProvider(bookId));
     final locale = ref.watch(localeProvider);
     final s = S.of(locale);
-    final hour = DateTime.now().hour;
+    final hour = ref.watch(currentHourProvider);
 
     // Find book name
     final book = hadithBooks.firstWhere((b) => b.id == bookId);
@@ -101,7 +102,7 @@ class HadithBrowseScreen extends ConsumerWidget {
                       ],
                     ),
                   ),
-                  error: (_, __) => Center(
+                  error: (_, _) => Center(
                     child: Text(
                       s.failedToLoad,
                       style: TextStyle(

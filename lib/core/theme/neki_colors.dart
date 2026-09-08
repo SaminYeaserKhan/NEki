@@ -151,7 +151,7 @@ class NekiColors {
       case GradientTone.midTone:
         return const Color(0xCC1A3D2B);                       // Semi-dark green
       case GradientTone.light:
-        return const Color(0xE6FFFFFF);                        // Opaque white
+        return const Color(0x991A3D2B);                       // Lighter glass green
     }
   }
 
@@ -163,7 +163,7 @@ class NekiColors {
       case GradientTone.midTone:
         return const Color(0xFFF5F2E8);                        // Cream on dark card
       case GradientTone.light:
-        return const Color(0xFF1A3D2B);                        // Dark green on white card
+        return Colors.white;                                   // White on glass green
     }
   }
 
@@ -175,7 +175,7 @@ class NekiColors {
       case GradientTone.midTone:
         return const Color(0xAAF5F2E8);
       case GradientTone.light:
-        return const Color(0xFF4A6B58);                        // Muted green
+        return Colors.white.withValues(alpha: 0.7);
     }
   }
 
@@ -187,7 +187,7 @@ class NekiColors {
       case GradientTone.midTone:
         return const Color(0xFFF5F2E8);
       case GradientTone.light:
-        return const Color(0xFF1A3D2B);
+        return Colors.white;
     }
   }
 
@@ -199,7 +199,7 @@ class NekiColors {
       case GradientTone.midTone:
         return Colors.white.withValues(alpha: 0.12);
       case GradientTone.light:
-        return const Color(0x1A1A3D2B);                        // Subtle dark green
+        return Colors.white.withValues(alpha: 0.18);
     }
   }
 
@@ -211,7 +211,7 @@ class NekiColors {
       case GradientTone.midTone:
         return const Color(0xFFF5F2E8);
       case GradientTone.light:
-        return const Color(0xFF2E7D52);                        // Emerald
+        return Colors.white;
     }
   }
 

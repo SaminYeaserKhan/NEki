@@ -1,10 +1,14 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../painters/environment_painter.dart';
 import '../painters/mosque_painter.dart';
 import '../painters/stars_painter.dart';
 import '../theme/neki_colors.dart';
+import '../theme/theme_provider.dart';
+import 'celestial_body_widget.dart';
 
 /// A full-screen animated gradient background that shifts colours
 /// based on the current time of day.
@@ -13,7 +17,7 @@ import '../theme/neki_colors.dart';
 /// and animated [StarsPainter] when the sky is dark.
 ///
 /// Wrap your screen content in this widget using [child].
-class AnimatedGradientBackground extends StatefulWidget {
+class AnimatedGradientBackground extends ConsumerStatefulWidget {
   /// Content rendered on top of the background.
   final Widget? child;
 
@@ -32,29 +36,27 @@ class AnimatedGradientBackground extends StatefulWidget {
   });
 
   @override
-  State<AnimatedGradientBackground> createState() =>
+  ConsumerState<AnimatedGradientBackground> createState() =>
       _AnimatedGradientBackgroundState();
 }
 
-class _AnimatedGradientBackgroundState extends State<AnimatedGradientBackground>
-    with SingleTickerProviderStateMixin {
-  late List<Color> _currentGradient;
+class _AnimatedGradientBackgroundState extends ConsumerState<AnimatedGradientBackground>
+    with TickerProviderStateMixin {
   late Timer _timer;
 
   // Star twinkle animation
   late AnimationController _starController;
+  
+  // Environment (Clouds & Birds) drift animation
+  late AnimationController _envController;
 
   @override
   void initState() {
     super.initState();
-    _currentGradient = NekiColors.gradientForHour(DateTime.now().hour);
 
-    // Refresh gradient every 60 s (catches period transitions).
+    // Refresh gradient every 60 s (catches period transitions in system mode).
     _timer = Timer.periodic(const Duration(seconds: 60), (_) {
-      final next = NekiColors.gradientForHour(DateTime.now().hour);
-      if (!_colorsEqual(next, _currentGradient)) {
-        setState(() => _currentGradient = next);
-      }
+      if (mounted) setState(() {});
     });
 
     // Continuous star twinkle animation.
@@ -62,26 +64,27 @@ class _AnimatedGradientBackgroundState extends State<AnimatedGradientBackground>
       vsync: this,
       duration: const Duration(seconds: 6),
     )..repeat();
-  }
 
-  bool _colorsEqual(List<Color> a, List<Color> b) {
-    if (a.length != b.length) return false;
-    for (int i = 0; i < a.length; i++) {
-      if (a[i] != b[i]) return false;
-    }
-    return true;
+    // Continuous environment drift animation.
+    _envController = AnimationController(
+      vsync: this,
+      duration: const Duration(seconds: 60),
+    )..repeat();
   }
 
   @override
   void dispose() {
     _timer.cancel();
     _starController.dispose();
+    _envController.dispose();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
-    final isDark = NekiColors.isDarkSky(DateTime.now().hour);
+    final hour = ref.watch(currentHourProvider);
+    final isDark = NekiColors.isDarkSky(hour);
+    final targetGradient = NekiColors.gradientForHour(hour);
     final nekiExt = Theme.of(context).extension<NekiColorExtension>();
 
     return AnimatedContainer(
@@ -91,7 +94,7 @@ class _AnimatedGradientBackgroundState extends State<AnimatedGradientBackground>
         gradient: LinearGradient(
           begin: Alignment.topCenter,
           end: Alignment.bottomCenter,
-          colors: _currentGradient,
+          colors: targetGradient,
         ),
       ),
       child: Stack(
@@ -107,6 +110,42 @@ class _AnimatedGradientBackgroundState extends State<AnimatedGradientBackground>
                       animationValue: _starController.value,
                       starCount: 50,
                       color: Colors.white,
+                    ),
+                  );
+                },
+              ),
+            ),
+
+          // ── Celestial Body (Sun/Moon) ──
+          Positioned.fill(
+            child: CelestialBodyWidget(hour: hour),
+          ),
+
+          // ── Clouds ──
+          Positioned.fill(
+            child: AnimatedBuilder(
+              animation: _envController,
+              builder: (context, _) {
+                return CustomPaint(
+                  painter: CloudsPainter(
+                    animationValue: _envController.value,
+                    hour: hour,
+                  ),
+                );
+              },
+            ),
+          ),
+
+          // ── Birds ──
+          if (!isDark)
+            Positioned.fill(
+              child: AnimatedBuilder(
+                animation: _envController,
+                builder: (context, _) {
+                  return CustomPaint(
+                    painter: BirdsPainter(
+                      animationValue: _envController.value,
+                      hour: hour,
                     ),
                   );
                 },
@@ -153,3 +192,178 @@ class _AnimatedGradientBackgroundState extends State<AnimatedGradientBackground>
     );
   }
 }
+
+/// A header version of the animated gradient background.
+/// It sizes itself to the height of its [child] plus additional padding
+/// at the bottom to reveal the mosque silhouette.
+class AnimatedGradientHeader extends ConsumerStatefulWidget {
+  final Widget child;
+  final bool showMosque;
+  final bool showStars;
+  final double bottomPadding;
+  final double? minHeight;
+
+  const AnimatedGradientHeader({
+    super.key,
+    required this.child,
+    this.showMosque = true,
+    this.showStars = true,
+    this.bottomPadding = 180.0,
+    this.minHeight,
+  });
+
+  @override
+  ConsumerState<AnimatedGradientHeader> createState() =>
+      _AnimatedGradientHeaderState();
+}
+
+class _AnimatedGradientHeaderState extends ConsumerState<AnimatedGradientHeader>
+    with TickerProviderStateMixin {
+  late Timer _timer;
+  late AnimationController _starController;
+  late AnimationController _envController;
+
+  @override
+  void initState() {
+    super.initState();
+    _timer = Timer.periodic(const Duration(seconds: 60), (_) {
+      if (mounted) setState(() {});
+    });
+    _starController = AnimationController(
+      vsync: this,
+      duration: const Duration(seconds: 6),
+    )..repeat();
+    _envController = AnimationController(
+      vsync: this,
+      duration: const Duration(seconds: 60),
+    )..repeat();
+  }
+
+  @override
+  void dispose() {
+    _timer.cancel();
+    _starController.dispose();
+    _envController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final hour = ref.watch(currentHourProvider);
+    final isDark = NekiColors.isDarkSky(hour);
+    final targetGradient = NekiColors.gradientForHour(hour);
+    final nekiExt = Theme.of(context).extension<NekiColorExtension>();
+
+    return AnimatedContainer(
+      duration: const Duration(seconds: 3),
+      curve: Curves.easeInOut,
+      constraints: widget.minHeight != null
+          ? BoxConstraints(minHeight: widget.minHeight!)
+          : null,
+      decoration: BoxDecoration(
+        gradient: LinearGradient(
+          begin: Alignment.topCenter,
+          end: Alignment.bottomCenter,
+          colors: targetGradient,
+        ),
+      ),
+      child: Stack(
+        children: [
+          // ── Stars (only during dark-sky hours) ──
+          if (widget.showStars && isDark)
+            Positioned.fill(
+              child: AnimatedBuilder(
+                animation: _starController,
+                builder: (context, _) {
+                  return CustomPaint(
+                    painter: StarsPainter(
+                      animationValue: _starController.value,
+                      starCount: 50,
+                      color: Colors.white,
+                    ),
+                  );
+                },
+              ),
+            ),
+
+          // ── Celestial Body (Sun/Moon) ──
+          Positioned.fill(
+            child: CelestialBodyWidget(hour: hour),
+          ),
+
+          // ── Clouds ──
+          Positioned.fill(
+            child: AnimatedBuilder(
+              animation: _envController,
+              builder: (context, _) {
+                return CustomPaint(
+                  painter: CloudsPainter(
+                    animationValue: _envController.value,
+                    hour: hour,
+                  ),
+                );
+              },
+            ),
+          ),
+
+          // ── Birds ──
+          if (!isDark)
+            Positioned.fill(
+              child: AnimatedBuilder(
+                animation: _envController,
+                builder: (context, _) {
+                  return CustomPaint(
+                    painter: BirdsPainter(
+                      animationValue: _envController.value,
+                      hour: hour,
+                    ),
+                  );
+                },
+              ),
+            ),
+
+          // ── Mosque back layer (parallax) ──
+          if (widget.showMosque)
+            Positioned(
+              left: 0,
+              right: 0,
+              bottom: 0,
+              height: 250,
+              child: CustomPaint(
+                painter: MosqueSilhouettePainter(
+                  color: (nekiExt?.mosqueSilhouetteBack ??
+                          NekiColors.silhouetteMid)
+                      .withValues(alpha: 0.5),
+                  isBackLayer: true,
+                ),
+              ),
+            ),
+
+          // ── Mosque front layer (detailed) ──
+          if (widget.showMosque)
+            Positioned(
+              left: 0,
+              right: 0,
+              bottom: 0,
+              height: 250,
+              child: CustomPaint(
+                painter: MosqueSilhouettePainter(
+                  color: nekiExt?.mosqueSilhouetteFront ??
+                      NekiColors.silhouetteDark,
+                  isBackLayer: false,
+                ),
+              ),
+            ),
+
+          // ── Content ──
+          // Not positioned, dictates the height of the Stack
+          Padding(
+            padding: EdgeInsets.only(bottom: widget.bottomPadding),
+            child: widget.child,
+          ),
+        ],
+      ),
+    );
+  }
+}
+

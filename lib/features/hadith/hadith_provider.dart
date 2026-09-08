@@ -1,9 +1,8 @@
 import 'dart:convert';
-import 'dart:math';
 
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_riverpod/legacy.dart';
-import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 
 // ─────────────────────────────────────────────────────
@@ -26,18 +25,46 @@ class HadithBook {
 
 class HadithEntry {
   final int number;
+  final String bookId;
+  final String chapter;
   final String arabic;
-  final String text; // Translation
+  final String text; // Translation based on active language
+  final String? english;
+  final String? bengali;
+  final String? transliteration;
   final String? narrator;
   final String? grade;
+  final String? reference;
 
   const HadithEntry({
     required this.number,
+    this.bookId = 'bukhari',
+    this.chapter = 'General',
     required this.arabic,
     required this.text,
+    this.english,
+    this.bengali,
+    this.transliteration,
     this.narrator,
     this.grade,
+    this.reference,
   });
+
+  factory HadithEntry.fromJson(Map<String, dynamic> json) {
+    return HadithEntry(
+      number: json['hadithNumber'] as int? ?? json['id'] as int? ?? json['number'] as int? ?? 1,
+      bookId: json['bookId'] as String? ?? 'bukhari',
+      chapter: json['chapter'] as String? ?? 'General',
+      arabic: json['arabic'] as String? ?? '',
+      text: json['bengali'] as String? ?? json['english'] as String? ?? json['text'] as String? ?? '',
+      english: json['english'] as String?,
+      bengali: json['bengali'] as String?,
+      transliteration: json['transliteration'] as String?,
+      narrator: json['narrator'] as String?,
+      grade: json['grade'] as String? ?? 'Sahih',
+      reference: json['reference'] as String?,
+    );
+  }
 }
 
 // ─────────────────────────────────────────────────────
@@ -58,16 +85,16 @@ const hadithBooks = [
     hadithCount: 7453,
   ),
   HadithBook(
-    id: 'abudawud',
-    nameEnglish: 'Sunan Abu Dawud',
-    nameBengali: 'সুনানে আবু দাউদ',
-    hadithCount: 5274,
-  ),
-  HadithBook(
     id: 'tirmidhi',
     nameEnglish: 'Jami at-Tirmidhi',
     nameBengali: 'জামে আত-তিরমিযী',
     hadithCount: 3956,
+  ),
+  HadithBook(
+    id: 'abudawud',
+    nameEnglish: 'Sunan Abu Dawud',
+    nameBengali: 'সুনানে আবু দাউদ',
+    hadithCount: 5274,
   ),
   HadithBook(
     id: 'ibnmajah',
@@ -84,14 +111,18 @@ const hadithBooks = [
 ];
 
 // ─────────────────────────────────────────────────────
-//  CDN base URLs (fawazahmed0/hadith-api)
+//  Local & CDN Providers
 // ─────────────────────────────────────────────────────
 
-const _cdnBase =
-    'https://cdn.jsdelivr.net/gh/fawazahmed0/hadith-api@1';
-
-String _hadithUrl(String bookId, String lang) =>
-    '$_cdnBase/editions/$lang-$bookId.json';
+final allLocalHadithsProvider = FutureProvider<List<HadithEntry>>((ref) async {
+  try {
+    final assetString = await rootBundle.loadString('assets/data/hadiths.json');
+    final list = jsonDecode(assetString) as List;
+    return list.map((e) => HadithEntry.fromJson(e as Map<String, dynamic>)).toList();
+  } catch (_) {
+    return [];
+  }
+});
 
 // ─────────────────────────────────────────────────────
 //  Hadith of the Day provider
@@ -100,61 +131,38 @@ String _hadithUrl(String bookId, String lang) =>
 class DailyHadith {
   final String arabic;
   final String translation;
+  final String? transliteration;
   final String bookName;
   final int hadithNumber;
 
   const DailyHadith({
     required this.arabic,
     required this.translation,
+    this.transliteration,
     required this.bookName,
     required this.hadithNumber,
   });
 }
 
 final dailyHadithProvider = FutureProvider<DailyHadith>((ref) async {
-  // Use today's date as seed for consistent daily rotation
-  final today = DateTime.now();
-  final seed = today.year * 10000 + today.month * 100 + today.day;
-  final rng = Random(seed);
-
-  // Pick a random hadith from Bukhari (most widely known)
-  final hadithNum = rng.nextInt(300) + 1; // First 300 are most popular
-
-  try {
-    // Fetch Bengali translation
-    final bnResponse = await http.get(
-      Uri.parse(_hadithUrl('bukhari', 'ben')),
+  final hadiths = await ref.watch(allLocalHadithsProvider.future);
+  if (hadiths.isNotEmpty) {
+    // Pick based on day of year for stable daily hadith
+    final dayOfYear = DateTime.now().difference(DateTime(DateTime.now().year, 1, 1)).inDays;
+    final hadith = hadiths[dayOfYear % hadiths.length];
+    return DailyHadith(
+      arabic: hadith.arabic,
+      translation: hadith.bengali ?? hadith.english ?? hadith.text,
+      transliteration: hadith.transliteration,
+      bookName: hadith.reference ?? 'Sahih al-Bukhari',
+      hadithNumber: hadith.number,
     );
-
-    // Fetch Arabic
-    final arResponse = await http.get(
-      Uri.parse(_hadithUrl('bukhari', 'ara')),
-    );
-
-    if (bnResponse.statusCode == 200 && arResponse.statusCode == 200) {
-      final bnData = jsonDecode(bnResponse.body);
-      final arData = jsonDecode(arResponse.body);
-
-      final bnHadiths = bnData['hadiths'] as List;
-      final arHadiths = arData['hadiths'] as List;
-
-      final index = hadithNum.clamp(0, bnHadiths.length - 1);
-
-      return DailyHadith(
-        arabic: arHadiths[index]['text'] ?? '',
-        translation: bnHadiths[index]['text'] ?? '',
-        bookName: 'Sahih al-Bukhari',
-        hadithNumber: hadithNum,
-      );
-    }
-  } catch (_) {
-    // Fallback
   }
 
   return const DailyHadith(
     arabic: 'إِنَّمَا الأَعْمَالُ بِالنِّيَّاتِ',
-    translation:
-        'নিশ্চয়ই প্রতিটি কাজ নিয়তের উপর নির্ভরশীল।',
+    translation: 'নিশ্চয়ই প্রতিটি কাজ নিয়তের উপর নির্ভরশীল।',
+    transliteration: 'Innamal a\'maalu bin-niyyaat',
     bookName: 'Sahih al-Bukhari',
     hadithNumber: 1,
   );
@@ -168,42 +176,12 @@ final selectedBookProvider = StateProvider<String>((ref) => 'bukhari');
 
 final hadithListProvider =
     FutureProvider.family<List<HadithEntry>, String>((ref, bookId) async {
-  try {
-    final bnResponse = await http.get(
-      Uri.parse(_hadithUrl(bookId, 'ben')),
-    );
-    final arResponse = await http.get(
-      Uri.parse(_hadithUrl(bookId, 'ara')),
-    );
+  final all = await ref.watch(allLocalHadithsProvider.future);
+  final filtered = all.where((h) => h.bookId == bookId).toList();
+  if (filtered.isNotEmpty) return filtered;
 
-    if (bnResponse.statusCode == 200 && arResponse.statusCode == 200) {
-      final bnData = jsonDecode(bnResponse.body);
-      final arData = jsonDecode(arResponse.body);
-
-      final bnHadiths = bnData['hadiths'] as List;
-      final arHadiths = arData['hadiths'] as List;
-
-      final count = bnHadiths.length < arHadiths.length
-          ? bnHadiths.length
-          : arHadiths.length;
-
-      return List.generate(count, (i) {
-        return HadithEntry(
-          number: i + 1,
-          arabic: arHadiths[i]['text'] ?? '',
-          text: bnHadiths[i]['text'] ?? '',
-          grade: bnHadiths[i]['grades'] != null &&
-                  (bnHadiths[i]['grades'] as List).isNotEmpty
-              ? (bnHadiths[i]['grades'] as List)[0]['grade']
-              : null,
-        );
-      });
-    }
-  } catch (_) {
-    // Network error
-  }
-
-  return [];
+  // Fallback to all if specific book has none
+  return all;
 });
 
 // ─────────────────────────────────────────────────────
@@ -229,44 +207,39 @@ class HadithSection {
 /// Fetch sections/chapters for a given hadith book.
 final hadithSectionsProvider =
     FutureProvider.family<List<HadithSection>, String>((ref, bookId) async {
-  try {
-    // Fetch the English edition to get section names
-    final response = await http.get(
-      Uri.parse('$_cdnBase/editions/eng-$bookId.json'),
-    );
+  final all = await ref.watch(allLocalHadithsProvider.future);
+  final bookHadiths = all.where((h) => h.bookId == bookId).toList();
 
-    if (response.statusCode == 200) {
-      final data = jsonDecode(response.body);
-      final metadata = data['metadata'];
-
-      if (metadata != null) {
-        final sectionNames =
-            metadata['section'] as Map<String, dynamic>? ?? {};
-        final sectionDetails =
-            metadata['section_detail'] as Map<String, dynamic>? ?? {};
-
-        final sections = <HadithSection>[];
-        for (final entry in sectionNames.entries) {
-          final num = int.tryParse(entry.key) ?? 0;
-          final detail = sectionDetails[entry.key] as Map<String, dynamic>?;
-
-          sections.add(HadithSection(
-            sectionNumber: num,
-            name: entry.value.toString(),
-            firstHadith: detail?['hadithnumber_first'] as int? ?? 0,
-            lastHadith: detail?['hadithnumber_last'] as int? ?? 0,
-          ));
-        }
-
-        sections.sort((a, b) => a.sectionNumber.compareTo(b.sectionNumber));
-        return sections;
-      }
+  if (bookHadiths.isNotEmpty) {
+    // Group by chapter
+    final chapterMap = <String, List<HadithEntry>>{};
+    for (final h in bookHadiths) {
+      chapterMap.putIfAbsent(h.chapter, () => []).add(h);
     }
-  } catch (_) {
-    // Network error
+
+    int secIndex = 1;
+    final sections = <HadithSection>[];
+    for (final entry in chapterMap.entries) {
+      final numbers = entry.value.map((e) => e.number).toList()..sort();
+      sections.add(HadithSection(
+        sectionNumber: secIndex++,
+        name: entry.key,
+        firstHadith: numbers.first,
+        lastHadith: numbers.last,
+      ));
+    }
+    return sections;
   }
 
-  return [];
+  // Fallback default chapters if empty
+  return [
+    const HadithSection(
+      sectionNumber: 1,
+      name: 'Essential Wisdom',
+      firstHadith: 1,
+      lastHadith: 1,
+    ),
+  ];
 });
 
 /// Browse mode: by collection or by section/topic.
@@ -278,45 +251,20 @@ final hadithBrowseModeProvider =
 /// Fetch hadiths for a specific section of a book.
 final hadithBySectionProvider = FutureProvider.family<List<HadithEntry>,
     ({String bookId, int sectionNumber})>((ref, params) async {
-  try {
-    // Fetch section-specific data
-    final engResponse = await http.get(
-      Uri.parse(
-          '$_cdnBase/editions/eng-${params.bookId}/sections/${params.sectionNumber}.json'),
+  final all = await ref.watch(allLocalHadithsProvider.future);
+  final bookHadiths = all.where((h) => h.bookId == params.bookId).toList();
+
+  if (bookHadiths.isNotEmpty) {
+    final sections = await ref.watch(hadithSectionsProvider(params.bookId).future);
+    final targetSection = sections.firstWhere(
+      (s) => s.sectionNumber == params.sectionNumber,
+      orElse: () => sections.first,
     );
-    final arResponse = await http.get(
-      Uri.parse(
-          '$_cdnBase/editions/ara-${params.bookId}/sections/${params.sectionNumber}.json'),
-    );
-
-    if (engResponse.statusCode == 200 && arResponse.statusCode == 200) {
-      final engData = jsonDecode(engResponse.body);
-      final arData = jsonDecode(arResponse.body);
-
-      final engHadiths = engData['hadiths'] as List;
-      final arHadiths = arData['hadiths'] as List;
-
-      final count = engHadiths.length < arHadiths.length
-          ? engHadiths.length
-          : arHadiths.length;
-
-      return List.generate(count, (i) {
-        return HadithEntry(
-          number: engHadiths[i]['hadithnumber'] as int? ?? (i + 1),
-          arabic: arHadiths[i]['text'] ?? '',
-          text: engHadiths[i]['text'] ?? '',
-          grade: engHadiths[i]['grades'] != null &&
-                  (engHadiths[i]['grades'] as List).isNotEmpty
-              ? (engHadiths[i]['grades'] as List)[0]['grade']
-              : null,
-        );
-      });
-    }
-  } catch (_) {
-    // Network error
+    return bookHadiths.where((h) => h.chapter == targetSection.name).toList();
   }
 
-  return [];
+  // Fallback to all local
+  return all;
 });
 
 // ─────────────────────────────────────────────────────

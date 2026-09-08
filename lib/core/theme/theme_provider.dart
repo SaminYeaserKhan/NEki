@@ -2,62 +2,106 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
-/// Persisted theme mode managed by Riverpod.
-///
-/// Usage:
-/// ```dart
-/// // Read the current mode
-/// final mode = ref.watch(themeProvider);
-///
-/// // Toggle dark mode
-/// ref.read(themeProvider.notifier).setMode(ThemeMode.dark);
-/// ```
-class ThemeModeNotifier extends Notifier<ThemeMode> {
-  static const _key = 'neki_theme_mode';
+
+enum NekiTimeTheme {
+  system,
+  fajr,
+  sunrise,
+  dhuhr,
+  asr,
+  maghrib,
+  isha
+}
+
+extension NekiTimeThemeExt on NekiTimeTheme {
+  int get simulatedHour {
+    switch (this) {
+      case NekiTimeTheme.system:
+        return DateTime.now().hour;
+      case NekiTimeTheme.fajr:
+        return 5;
+      case NekiTimeTheme.sunrise:
+        return 6;
+      case NekiTimeTheme.dhuhr:
+        return 12;
+      case NekiTimeTheme.asr:
+        return 16;
+      case NekiTimeTheme.maghrib:
+        return 18;
+      case NekiTimeTheme.isha:
+        return 20;
+    }
+  }
+
+  String get label {
+    switch (this) {
+      case NekiTimeTheme.system: return 'System Time';
+      case NekiTimeTheme.fajr: return 'Fajr Theme';
+      case NekiTimeTheme.sunrise: return 'Sunrise Theme';
+      case NekiTimeTheme.dhuhr: return 'Dhuhr Theme';
+      case NekiTimeTheme.asr: return 'Asr Theme';
+      case NekiTimeTheme.maghrib: return 'Maghrib Theme';
+      case NekiTimeTheme.isha: return 'Isha Theme';
+    }
+  }
+
+  IconData get icon {
+    switch (this) {
+      case NekiTimeTheme.system: return Icons.schedule_rounded;
+      case NekiTimeTheme.fajr: return Icons.nights_stay_rounded;
+      case NekiTimeTheme.sunrise: return Icons.wb_twilight_rounded;
+      case NekiTimeTheme.dhuhr: return Icons.wb_sunny_rounded;
+      case NekiTimeTheme.asr: return Icons.wb_cloudy_rounded;
+      case NekiTimeTheme.maghrib: return Icons.brightness_6_rounded;
+      case NekiTimeTheme.isha: return Icons.dark_mode_rounded;
+    }
+  }
+}
+
+class TimeThemeNotifier extends Notifier<NekiTimeTheme> {
+  static const _key = 'neki_time_theme';
 
   @override
-  ThemeMode build() {
-    // Load persisted preference asynchronously.
+  NekiTimeTheme build() {
     _loadPersisted();
-    return ThemeMode.system; // initial default
+    return NekiTimeTheme.system;
   }
 
   Future<void> _loadPersisted() async {
     final prefs = await SharedPreferences.getInstance();
     final stored = prefs.getString(_key);
     if (stored != null) {
-      state = ThemeMode.values.firstWhere(
+      state = NekiTimeTheme.values.firstWhere(
         (m) => m.name == stored,
-        orElse: () => ThemeMode.system,
+        orElse: () => NekiTimeTheme.system,
       );
     }
   }
 
-  /// Sets the theme mode and persists it.
-  Future<void> setMode(ThemeMode mode) async {
-    state = mode;
+  Future<void> setTheme(NekiTimeTheme theme) async {
+    state = theme;
     final prefs = await SharedPreferences.getInstance();
-    await prefs.setString(_key, mode.name);
+    await prefs.setString(_key, theme.name);
   }
 
-  /// Cycles through system → light → dark.
   Future<void> cycle() async {
-    switch (state) {
-      case ThemeMode.system:
-        await setMode(ThemeMode.light);
-      case ThemeMode.light:
-        await setMode(ThemeMode.dark);
-      case ThemeMode.dark:
-        await setMode(ThemeMode.system);
-    }
-  }
-
-  /// Toggles between light and dark (ignoring system).
-  Future<void> toggle() async {
-    await setMode(state == ThemeMode.dark ? ThemeMode.light : ThemeMode.dark);
+    final nextIndex = (state.index + 1) % NekiTimeTheme.values.length;
+    await setTheme(NekiTimeTheme.values[nextIndex]);
   }
 }
 
-/// Global theme mode provider.
-final themeProvider =
-    NotifierProvider<ThemeModeNotifier, ThemeMode>(ThemeModeNotifier.new);
+final timeThemeProvider =
+    NotifierProvider<TimeThemeNotifier, NekiTimeTheme>(TimeThemeNotifier.new);
+
+/// Provides the current simulated hour based on the selected theme.
+final currentHourProvider = Provider<int>((ref) {
+  final theme = ref.watch(timeThemeProvider);
+  return theme.simulatedHour;
+});
+
+/// Provides Flutter's ThemeMode. We always use dark mode so that standard 
+/// components (like the navigation bar) stay dark and align with our custom 
+/// glassmorphic dark-green shades.
+final themeProvider = Provider<ThemeMode>((ref) {
+  return ThemeMode.dark;
+});

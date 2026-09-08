@@ -1,15 +1,23 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:google_fonts/google_fonts.dart';
 
 import '../../core/locale/app_strings.dart';
 import '../../core/locale/locale_provider.dart';
 import '../../core/theme/neki_colors.dart';
+import '../../core/theme/theme_provider.dart';
+import '../../core/utils/bengali_phonetic_helper.dart';
 import '../../core/widgets/animated_gradient_bg.dart';
+import '../recitations/providers/recitation_audio_provider.dart';
+import '../recitations/widgets/audio_visualizer_widget.dart';
+import '../recitations/widgets/persistent_recitation_player.dart';
+import '../recitations/widgets/pronunciation_checker_modal.dart';
 import 'dua_provider.dart';
 
-/// Full-screen dua reader with PageView for swiping between duas.
-/// Shows 3 texts: Arabic, pronunciation, and translation.
+/// Redesigned Dua Reader with consistent vertical reading orientation.
+/// Eliminates conflicting horizontal swipe gestures in favor of a smooth,
+/// elegant devotional card deck with quick category navigation.
 class DuaDetailScreen extends ConsumerStatefulWidget {
   final List<Dua> duas;
   final int initialIndex;
@@ -25,19 +33,39 @@ class DuaDetailScreen extends ConsumerStatefulWidget {
 }
 
 class _DuaDetailScreenState extends ConsumerState<DuaDetailScreen> {
-  late PageController _pageController;
-  late int _currentIndex;
+  late ScrollController _scrollController;
+  final Map<int, GlobalKey> _duaKeys = {};
 
   @override
   void initState() {
     super.initState();
-    _currentIndex = widget.initialIndex;
-    _pageController = PageController(initialPage: widget.initialIndex);
+    _scrollController = ScrollController();
+    for (int i = 0; i < widget.duas.length; i++) {
+      _duaKeys[i] = GlobalKey();
+    }
+
+    if (widget.initialIndex > 0) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        _scrollToDua(widget.initialIndex);
+      });
+    }
+  }
+
+  void _scrollToDua(int index) {
+    final key = _duaKeys[index];
+    if (key?.currentContext != null) {
+      Scrollable.ensureVisible(
+        key!.currentContext!,
+        duration: const Duration(milliseconds: 400),
+        curve: Curves.easeOutCubic,
+        alignment: 0.1,
+      );
+    }
   }
 
   @override
   void dispose() {
-    _pageController.dispose();
+    _scrollController.dispose();
     super.dispose();
   }
 
@@ -45,329 +73,367 @@ class _DuaDetailScreenState extends ConsumerState<DuaDetailScreen> {
   Widget build(BuildContext context) {
     final locale = ref.watch(localeProvider);
     final s = S.of(locale);
-    final hour = DateTime.now().hour;
+    final hour = ref.watch(currentHourProvider);
+    final audio = ref.watch(recitationAudioProvider);
+
+    final categoryTitle = widget.duas.isNotEmpty
+        ? widget.duas.first.category.toUpperCase()
+        : 'DUAS';
 
     return AnimatedGradientBackground(
       showMosque: false,
       showStars: true,
       child: Scaffold(
         backgroundColor: Colors.transparent,
-        body: SafeArea(
-          child: Column(
-            children: [
-              // ── Header ──
-              Padding(
-                padding: const EdgeInsets.fromLTRB(4, 8, 16, 0),
-                child: Row(
-                  children: [
-                    IconButton(
-                      icon: Icon(Icons.arrow_back_ios_rounded,
-                          color: NekiColors.adaptiveTextPrimary(hour),
-                          size: 22),
-                      onPressed: () => Navigator.of(context).pop(),
-                    ),
-                    const SizedBox(width: 4),
-                    Expanded(
-                      child: Text(
-                        widget.duas[_currentIndex].title,
-                        style: GoogleFonts.inter(
-                          fontSize: 18,
-                          fontWeight: FontWeight.w800,
-                          color: NekiColors.adaptiveTextPrimary(hour),
-                          decoration: TextDecoration.none,
-                        ),
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                      ),
-                    ),
-                    // Page indicator
-                    Container(
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 10, vertical: 5),
-                      decoration: BoxDecoration(
-                        color: NekiColors.adaptiveCardColor(hour),
-                        borderRadius: BorderRadius.circular(10),
-                      ),
-                      child: Text(
-                        '${_currentIndex + 1}/${widget.duas.length}',
-                        style: TextStyle(
-                          fontSize: 12,
-                          fontWeight: FontWeight.bold,
-                          color: NekiColors.adaptiveTextPrimary(hour),
-                          decoration: TextDecoration.none,
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-
-              // ── Page View ──
-              Expanded(
-                child: PageView.builder(
-                  controller: _pageController,
-                  itemCount: widget.duas.length,
-                  onPageChanged: (i) => setState(() => _currentIndex = i),
-                  itemBuilder: (context, index) {
-                    return _DuaPage(
-                      dua: widget.duas[index],
-                      locale: locale,
-                      hour: hour,
-                      s: s,
-                    );
-                  },
-                ),
-              ),
-
-              // ── Bottom navigation arrows ──
-              Padding(
-                padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
-                child: Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  children: [
-                    _NavButton(
-                      icon: Icons.arrow_back_rounded,
-                      enabled: _currentIndex > 0,
-                      hour: hour,
-                      onTap: () {
-                        _pageController.previousPage(
-                          duration: const Duration(milliseconds: 300),
-                          curve: Curves.easeOutCubic,
-                        );
-                      },
-                    ),
-                    // Dot indicators (max 7 visible)
-                    Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: List.generate(
-                        widget.duas.length > 7 ? 7 : widget.duas.length,
-                        (i) {
-                          final dotIndex = widget.duas.length > 7
-                              ? (_currentIndex - 3).clamp(0, widget.duas.length - 7) + i
-                              : i;
-                          return Container(
-                            width: dotIndex == _currentIndex ? 16 : 6,
-                            height: 6,
-                            margin: const EdgeInsets.symmetric(horizontal: 2),
-                            decoration: BoxDecoration(
-                              color: dotIndex == _currentIndex
-                                  ? NekiColors.emeraldLight
-                                  : NekiColors.adaptiveTextSecondary(hour)
-                                      .withValues(alpha: 0.3),
-                              borderRadius: BorderRadius.circular(3),
-                            ),
-                          );
-                        },
-                      ),
-                    ),
-                    _NavButton(
-                      icon: Icons.arrow_forward_rounded,
-                      enabled: _currentIndex < widget.duas.length - 1,
-                      hour: hour,
-                      onTap: () {
-                        _pageController.nextPage(
-                          duration: const Duration(milliseconds: 300),
-                          curve: Curves.easeOutCubic,
-                        );
-                      },
-                    ),
-                  ],
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-// ─────────────────────────────────────────────────────
-//  Single Dua Page content
-// ─────────────────────────────────────────────────────
-
-class _DuaPage extends StatelessWidget {
-  final Dua dua;
-  final AppLocale locale;
-  final int hour;
-  final S s;
-
-  const _DuaPage({
-    required this.dua,
-    required this.locale,
-    required this.hour,
-    required this.s,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return SingleChildScrollView(
-      padding: const EdgeInsets.fromLTRB(16, 16, 16, 32),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          // ── Arabic text ──
-          Container(
-            padding: const EdgeInsets.all(20),
-            decoration: BoxDecoration(
-              color: NekiColors.adaptiveCardColor(hour),
-              borderRadius: BorderRadius.circular(22),
-              border: Border.all(
-                color: NekiColors.goldLight.withValues(alpha: 0.15),
-              ),
-            ),
-            child: Text(
-              dua.arabic,
-              style: GoogleFonts.amiriQuran(
-                fontSize: 26,
-                height: 2.0,
-                color: NekiColors.adaptiveTextPrimary(hour),
-                decoration: TextDecoration.none,
-              ),
-              textAlign: TextAlign.center,
-              textDirection: TextDirection.rtl,
-            ),
-          ),
-
-          const SizedBox(height: 16),
-
-          // ── Pronunciation / Transliteration ──
-          if (dua.transliteration.isNotEmpty)
-            Container(
-              padding: const EdgeInsets.all(16),
-              decoration: BoxDecoration(
-                color: NekiColors.goldLight.withValues(alpha: 0.08),
-                borderRadius: BorderRadius.circular(18),
-                border: Border.all(
-                  color: NekiColors.goldLight.withValues(alpha: 0.12),
-                ),
-              ),
+        body: Stack(
+          children: [
+            SafeArea(
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Row(
-                    children: [
-                      Icon(Icons.record_voice_over_rounded,
-                          size: 16,
-                          color: NekiColors.goldLight.withValues(alpha: 0.7)),
-                      const SizedBox(width: 8),
-                      Text(
-                        s.pronunciation,
-                        style: TextStyle(
-                          fontSize: 12,
-                          fontWeight: FontWeight.bold,
-                          color: NekiColors.goldLight.withValues(alpha: 0.7),
-                          decoration: TextDecoration.none,
+                  // ── Top Header ──
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(6, 8, 16, 4),
+                    child: Row(
+                      children: [
+                        IconButton(
+                          icon: Icon(
+                            Icons.arrow_back_ios_rounded,
+                            color: NekiColors.adaptiveTextPrimary(hour),
+                            size: 20,
+                          ),
+                          onPressed: () => Navigator.of(context).pop(),
                         ),
-                      ),
-                    ],
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                categoryTitle,
+                                style: GoogleFonts.inter(
+                                  fontSize: 18,
+                                  fontWeight: FontWeight.w900,
+                                  color: NekiColors.adaptiveTextPrimary(hour),
+                                  decoration: TextDecoration.none,
+                                ),
+                              ),
+                              Text(
+                                '${widget.duas.length} Supplications',
+                                style: TextStyle(
+                                  fontSize: 11,
+                                  color: NekiColors.adaptiveTextSecondary(hour),
+                                  decoration: TextDecoration.none,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ),
                   ),
-                  const SizedBox(height: 10),
-                  Text(
-                    dua.transliteration,
-                    style: TextStyle(
-                      fontSize: 16,
-                      fontStyle: FontStyle.italic,
-                      height: 1.7,
-                      color: NekiColors.goldLight.withValues(alpha: 0.9),
-                      decoration: TextDecoration.none,
+
+                  // ── Sticky Horizontal Quick-Jump Pill Bar ──
+                  SizedBox(
+                    height: 38,
+                    child: ListView.builder(
+                      scrollDirection: Axis.horizontal,
+                      padding: const EdgeInsets.symmetric(horizontal: 16),
+                      itemCount: widget.duas.length,
+                      itemBuilder: (context, index) {
+                        final dua = widget.duas[index];
+                        return Padding(
+                          padding: const EdgeInsets.only(right: 8),
+                          child: ActionChip(
+                            padding: const EdgeInsets.symmetric(horizontal: 4),
+                            backgroundColor: NekiColors.adaptiveCardColor(hour),
+                            side: BorderSide(color: NekiColors.adaptiveCardBorder(hour)),
+                            label: Text(
+                              '${index + 1}. ${dua.title}',
+                              style: TextStyle(
+                                fontSize: 11.5,
+                                color: NekiColors.adaptiveTextPrimary(hour),
+                              ),
+                            ),
+                            onPressed: () => _scrollToDua(index),
+                          ),
+                        );
+                      },
+                    ),
+                  ),
+
+                  const SizedBox(height: 6),
+
+                  // ── Vertical Dua Cards Deck ──
+                  Expanded(
+                    child: ListView.builder(
+                      controller: _scrollController,
+                      padding: const EdgeInsets.fromLTRB(16, 6, 16, 140),
+                      itemCount: widget.duas.length,
+                      itemBuilder: (context, index) {
+                        final dua = widget.duas[index];
+                        final isPlaying = audio.isPlaying &&
+                            audio.type == RecitationType.dua &&
+                            audio.currentVerse == dua.id;
+
+                        return _DuaCard(
+                          key: _duaKeys[index],
+                          dua: dua,
+                          index: index + 1,
+                          hour: hour,
+                          locale: locale,
+                          s: s,
+                          isPlaying: isPlaying,
+                          onPlayTap: () {
+                            if (isPlaying) {
+                              ref.read(recitationAudioProvider.notifier).togglePlayPause();
+                            } else {
+                              ref.read(recitationAudioProvider.notifier).playDua(dua);
+                            }
+                          },
+                          onVocalizeTap: () {
+                            final isBangla = locale == AppLocale.bangla;
+                            final trans = isBangla && dua.bengali != null
+                                ? dua.bengali!
+                                : dua.description;
+                            final pronunciation = isBangla
+                                ? (dua.transliterationBn ?? BengaliPhoneticHelper.toBengaliPronunciation(dua.transliteration))
+                                : dua.transliteration;
+
+                            PronunciationCheckerModal.show(
+                              context,
+                              title: dua.title,
+                              arabicText: dua.arabic,
+                              transliteration: pronunciation,
+                              translation: trans,
+                            );
+                          },
+                        );
+                      },
                     ),
                   ),
                 ],
               ),
             ),
 
-          const SizedBox(height: 16),
-
-          // ── Translation ──
-          Container(
-            padding: const EdgeInsets.all(16),
-            decoration: BoxDecoration(
-              color: NekiColors.adaptiveCardColor(hour),
-              borderRadius: BorderRadius.circular(18),
-              border: Border.all(color: NekiColors.adaptiveCardBorder(hour)),
-            ),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(
-                  children: [
-                    Icon(Icons.translate_rounded,
-                        size: 16,
-                        color: NekiColors.adaptiveTextSecondary(hour)),
-                    const SizedBox(width: 8),
-                    Text(
-                      s.translation,
-                      style: TextStyle(
-                        fontSize: 12,
-                        fontWeight: FontWeight.bold,
-                        color: NekiColors.adaptiveTextSecondary(hour),
-                        decoration: TextDecoration.none,
-                      ),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 10),
-                Text(
-                  dua.description,
-                  style: TextStyle(
-                    fontSize: 16,
-                    height: 1.7,
-                    color: NekiColors.adaptiveTextPrimary(hour),
-                    decoration: TextDecoration.none,
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ],
+            // ── Single Docked Floating Audio Player ──
+            const PersistentRecitationPlayer(bottomPadding: 24),
+          ],
+        ),
       ),
     );
   }
 }
 
-// ─────────────────────────────────────────────────────
-//  Navigation Button
-// ─────────────────────────────────────────────────────
-
-class _NavButton extends StatelessWidget {
-  final IconData icon;
-  final bool enabled;
+class _DuaCard extends StatelessWidget {
+  final Dua dua;
+  final int index;
   final int hour;
-  final VoidCallback onTap;
+  final AppLocale locale;
+  final S s;
+  final bool isPlaying;
+  final VoidCallback onPlayTap;
+  final VoidCallback onVocalizeTap;
 
-  const _NavButton({
-    required this.icon,
-    required this.enabled,
+  const _DuaCard({
+    super.key,
+    required this.dua,
+    required this.index,
     required this.hour,
-    required this.onTap,
+    required this.locale,
+    required this.s,
+    required this.isPlaying,
+    required this.onPlayTap,
+    required this.onVocalizeTap,
   });
 
   @override
   Widget build(BuildContext context) {
-    return GestureDetector(
-      onTap: enabled ? onTap : null,
-      child: Container(
-        width: 44,
-        height: 44,
-        decoration: BoxDecoration(
-          color: enabled
-              ? NekiColors.adaptiveCardColor(hour)
-              : Colors.transparent,
-          borderRadius: BorderRadius.circular(14),
-          border: Border.all(
-            color: enabled
-                ? NekiColors.adaptiveCardBorder(hour)
-                : Colors.transparent,
+    final translationText = locale == AppLocale.bangla && dua.bengali != null
+        ? dua.bengali!
+        : dua.description;
+
+    return AnimatedContainer(
+      duration: const Duration(milliseconds: 300),
+      margin: const EdgeInsets.only(bottom: 14),
+      padding: const EdgeInsets.all(18),
+      decoration: BoxDecoration(
+        color: isPlaying
+            ? NekiColors.emeraldPrimary.withValues(alpha: 0.2)
+            : NekiColors.adaptiveCardColor(hour),
+        borderRadius: BorderRadius.circular(22),
+        border: Border.all(
+          color: isPlaying
+              ? NekiColors.emeraldLight
+              : NekiColors.adaptiveCardBorder(hour),
+          width: isPlaying ? 1.6 : 1.0,
+        ),
+        boxShadow: isPlaying
+            ? [
+                BoxShadow(
+                  color: NekiColors.emeraldPrimary.withValues(alpha: 0.25),
+                  blurRadius: 16,
+                ),
+              ]
+            : null,
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          // ── Header Row ──
+          Row(
+            children: [
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 4),
+                decoration: BoxDecoration(
+                  color: NekiColors.emeraldPrimary.withValues(alpha: 0.25),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Text(
+                  '#$index',
+                  style: const TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.bold,
+                    color: NekiColors.emeraldLight,
+                    decoration: TextDecoration.none,
+                  ),
+                ),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  dua.title,
+                  style: TextStyle(
+                    fontSize: 14,
+                    fontWeight: FontWeight.bold,
+                    color: NekiColors.adaptiveTextPrimary(hour),
+                    decoration: TextDecoration.none,
+                  ),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+              if (isPlaying) ...[
+                const AudioVisualizerWidget(
+                  isPlaying: true,
+                  barCount: 3,
+                  height: 14,
+                  barWidth: 2,
+                  color: NekiColors.emeraldLight,
+                ),
+                const SizedBox(width: 8),
+              ],
+
+              // Copy button
+              IconButton(
+                constraints: const BoxConstraints(),
+                padding: EdgeInsets.zero,
+                icon: const Icon(Icons.copy_rounded, size: 16, color: Colors.white38),
+                onPressed: () {
+                  Clipboard.setData(ClipboardData(text: '${dua.arabic}\n\n${dua.title}'));
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(
+                      content: Text('Copied Dua to clipboard'),
+                      behavior: SnackBarBehavior.floating,
+                      duration: Duration(seconds: 1),
+                    ),
+                  );
+                },
+              ),
+            ],
           ),
-        ),
-        child: Icon(
-          icon,
-          color: enabled
-              ? NekiColors.adaptiveTextPrimary(hour)
-              : NekiColors.adaptiveTextSecondary(hour).withValues(alpha: 0.3),
-          size: 22,
-        ),
+
+          const SizedBox(height: 14),
+
+          // ── Arabic Scripture ──
+          Text(
+            dua.arabic,
+            style: GoogleFonts.amiriQuran(
+              fontSize: 24,
+              height: 2.0,
+              color: isPlaying ? const Color(0xFFFFFBEA) : NekiColors.adaptiveTextPrimary(hour),
+              decoration: TextDecoration.none,
+            ),
+            textAlign: TextAlign.right,
+            textDirection: TextDirection.rtl,
+          ),
+
+          // ── Transliteration / Pronunciation ──
+          if (dua.transliteration.isNotEmpty) ...[
+            const SizedBox(height: 10),
+            Text(
+              locale == AppLocale.bangla
+                  ? (dua.transliterationBn ?? BengaliPhoneticHelper.toBengaliPronunciation(dua.transliteration))
+                  : dua.transliteration,
+              style: TextStyle(
+                fontSize: 13,
+                fontStyle: locale == AppLocale.bangla ? FontStyle.normal : FontStyle.italic,
+                color: NekiColors.goldLight.withValues(alpha: 0.9),
+                height: 1.45,
+                decoration: TextDecoration.none,
+              ),
+            ),
+          ],
+
+          const SizedBox(height: 8),
+
+          // ── Translation ──
+          Text(
+            translationText,
+            style: TextStyle(
+              fontSize: 13.5,
+              height: 1.5,
+              color: NekiColors.adaptiveTextPrimary(hour).withValues(alpha: 0.88),
+              decoration: TextDecoration.none,
+            ),
+          ),
+
+          if (dua.reference != null && dua.reference!.isNotEmpty) ...[
+            const SizedBox(height: 8),
+            Text(
+              dua.reference!,
+              style: TextStyle(
+                fontSize: 11,
+                color: NekiColors.adaptiveTextSecondary(hour).withValues(alpha: 0.7),
+                decoration: TextDecoration.none,
+              ),
+            ),
+          ],
+
+          const SizedBox(height: 14),
+
+          // ── Action Buttons: Recite & Pronunciation ──
+          Row(
+            children: [
+              Expanded(
+                child: OutlinedButton.icon(
+                  onPressed: onVocalizeTap,
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: NekiColors.goldLight,
+                    side: BorderSide(color: NekiColors.goldLight.withValues(alpha: 0.4)),
+                    padding: const EdgeInsets.symmetric(vertical: 10),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                  ),
+                  icon: const Icon(Icons.mic_rounded, size: 16),
+                  label: const Text('Recite & Check', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
+                ),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: ElevatedButton.icon(
+                  onPressed: onPlayTap,
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: NekiColors.emeraldPrimary,
+                    foregroundColor: Colors.white,
+                    padding: const EdgeInsets.symmetric(vertical: 10),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                  ),
+                  icon: Icon(isPlaying ? Icons.pause_rounded : Icons.volume_up_rounded, size: 16),
+                  label: Text(isPlaying ? 'Pause' : 'Pronunciation', style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
+                ),
+              ),
+            ],
+          ),
+        ],
       ),
     );
   }

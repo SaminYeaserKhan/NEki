@@ -7,10 +7,8 @@ import 'core/navigation/navigation_providers.dart';
 import 'core/theme/neki_colors.dart';
 import 'core/theme/neki_theme.dart';
 import 'core/theme/theme_provider.dart';
-import 'features/dua/dua_screen.dart';
-import 'features/hadith/hadith_screen.dart';
 import 'features/home/home_screen.dart';
-import 'features/quran/surah_list_screen.dart';
+import 'features/recitations/recitations_screen.dart';
 import 'features/splash/splash_screen.dart';
 
 void main() {
@@ -77,7 +75,7 @@ class MainNavigationShell extends ConsumerWidget {
     final currentIndex = ref.watch(navigationIndexProvider);
     final locale = ref.watch(localeProvider);
     final s = S.of(locale);
-    final hour = DateTime.now().hour;
+    final hour = ref.watch(currentHourProvider);
 
     final screens = [
       const HomeScreen(),
@@ -139,172 +137,6 @@ class MainNavigationShell extends ConsumerWidget {
             label: s.profile,
           ),
         ],
-      ),
-    );
-  }
-}
-
-// ─────────────────────────────────────────────────────
-//  Recitations Screen — Quran / Dua / Hadith sub-tabs
-// ─────────────────────────────────────────────────────
-
-class RecitationsScreen extends ConsumerWidget {
-  const RecitationsScreen({super.key});
-
-  @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final tabIndex = ref.watch(recitationsTabProvider);
-    final locale = ref.watch(localeProvider);
-    final s = S.of(locale);
-    final hour = DateTime.now().hour;
-
-    return DefaultTabController(
-      length: 3,
-      initialIndex: tabIndex,
-      child: Builder(
-        builder: (context) {
-          // Keep provider in sync when user swipes tabs
-          final controller = DefaultTabController.of(context);
-          controller.addListener(() {
-            if (!controller.indexIsChanging) {
-              ref.read(recitationsTabProvider.notifier).state = controller.index;
-            }
-          });
-
-          return Scaffold(
-            backgroundColor: Colors.transparent,
-            body: Stack(
-              children: [
-                // Background gradient
-                const _RecitationsBackground(),
-
-                // Content
-                SafeArea(
-                  child: Column(
-                    children: [
-                      // ── Header ──
-                      Padding(
-                        padding: const EdgeInsets.fromLTRB(20, 12, 20, 8),
-                        child: Row(
-                          children: [
-                            Text(
-                              s.recitations,
-                              style: TextStyle(
-                                fontSize: 24,
-                                fontWeight: FontWeight.w900,
-                                color: NekiColors.adaptiveTextPrimary(hour),
-                                decoration: TextDecoration.none,
-                              ),
-                            ),
-                            const Spacer(),
-                            GestureDetector(
-                              onTap: () =>
-                                  ref.read(localeProvider.notifier).toggle(),
-                              child: Container(
-                                padding: const EdgeInsets.symmetric(
-                                    horizontal: 10, vertical: 6),
-                                decoration: BoxDecoration(
-                                  color: NekiColors.adaptiveCardColor(hour),
-                                  borderRadius: BorderRadius.circular(10),
-                                  border: Border.all(
-                                      color: NekiColors.adaptiveCardBorder(hour)),
-                                ),
-                                child: Text(
-                                  ref.watch(localeProvider) == AppLocale.bangla
-                                      ? 'বাং'
-                                      : 'EN',
-                                  style: TextStyle(
-                                    fontSize: 13,
-                                    fontWeight: FontWeight.bold,
-                                    color: NekiColors.emeraldLight,
-                                    decoration: TextDecoration.none,
-                                  ),
-                                ),
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-
-                      // ── Tab bar ──
-                      Container(
-                        margin: const EdgeInsets.symmetric(horizontal: 16),
-                        decoration: BoxDecoration(
-                          color: NekiColors.adaptiveCardColor(hour),
-                          borderRadius: BorderRadius.circular(14),
-                          border: Border.all(
-                              color: NekiColors.adaptiveCardBorder(hour)),
-                        ),
-                        child: TabBar(
-                          controller: controller,
-                          indicatorSize: TabBarIndicatorSize.tab,
-                          indicator: BoxDecoration(
-                            color: NekiColors.emeraldPrimary.withValues(alpha: 0.3),
-                            borderRadius: BorderRadius.circular(12),
-                          ),
-                          dividerColor: Colors.transparent,
-                          labelColor: NekiColors.adaptiveTextPrimary(hour),
-                          unselectedLabelColor:
-                              NekiColors.adaptiveTextSecondary(hour),
-                          labelStyle: const TextStyle(
-                            fontSize: 14,
-                            fontWeight: FontWeight.w700,
-                            decoration: TextDecoration.none,
-                          ),
-                          unselectedLabelStyle: const TextStyle(
-                            fontSize: 14,
-                            fontWeight: FontWeight.w500,
-                            decoration: TextDecoration.none,
-                          ),
-                          tabs: [
-                            Tab(text: s.quranTab),
-                            Tab(text: s.duaTab),
-                            Tab(text: s.hadithTab),
-                          ],
-                        ),
-                      ),
-                      const SizedBox(height: 8),
-
-                      // ── Tab content ──
-                      Expanded(
-                        child: TabBarView(
-                          controller: controller,
-                          children: const [
-                            SurahListScreen(),
-                            DuaScreen(),
-                            HadithScreen(),
-                          ],
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              ],
-            ),
-          );
-        },
-      ),
-    );
-  }
-}
-
-class _RecitationsBackground extends StatelessWidget {
-  const _RecitationsBackground();
-
-  @override
-  Widget build(BuildContext context) {
-    final hour = DateTime.now().hour;
-    final colors = NekiColors.gradientForHour(hour);
-
-    return AnimatedContainer(
-      duration: const Duration(seconds: 3),
-      curve: Curves.easeInOut,
-      decoration: BoxDecoration(
-        gradient: LinearGradient(
-          begin: Alignment.topCenter,
-          end: Alignment.bottomCenter,
-          colors: colors,
-        ),
       ),
     );
   }

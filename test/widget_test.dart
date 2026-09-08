@@ -1,3 +1,4 @@
+import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -11,5 +12,7 @@ void main() {
 
     // The splash screen should be showing "NEki"
     expect(find.text('NEki'), findsOneWidget);
+
+    await tester.pumpWidget(const SizedBox.shrink());
   });
 }
