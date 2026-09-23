@@ -9,8 +9,9 @@ import 'package:quran/quran.dart' as quran;
 import '../../core/theme/neki_colors.dart';
 import '../recitations/providers/reading_settings_provider.dart';
 import '../recitations/providers/recitation_audio_provider.dart';
+import '../recitations/widgets/bottom_panning_nav_bar.dart';
+import '../recitations/widgets/global_reading_control_bar.dart';
 import '../recitations/widgets/persistent_recitation_player.dart';
-import '../recitations/widgets/recitation_settings_sheet.dart';
 import 'quran_provider.dart';
 import 'widgets/ayah_navigation_sheet.dart';
 import 'widgets/mushaf_view_widget.dart';
@@ -148,6 +149,11 @@ class _SurahReaderScreenState extends ConsumerState<SurahReaderScreen> {
                   translationLang,
                 ),
 
+                // ── Global Reading Controls (Elements, Language, Audio Track) ──
+                const GlobalReadingControlBar(
+                  padding: EdgeInsets.fromLTRB(16, 8, 16, 10),
+                ),
+
                 // ── Reading Body (Mushaf vs Study View) ──
                 Expanded(
                   child: settings.readingMode == ReadingMode.mushaf
@@ -184,8 +190,19 @@ class _SurahReaderScreenState extends ConsumerState<SurahReaderScreen> {
             ),
           ),
 
+          // ── Bottom Scroll Panning Bar for Ayah Navigation ──
+          if (totalVerses > 1)
+            BottomPanningNavBar(
+              itemCount: totalVerses,
+              currentIndex: (_currentVisibleVerse - 1).clamp(0, totalVerses - 1),
+              labelBuilder: (index) => '#${index + 1}',
+              prevTooltip: 'Previous Ayah',
+              nextTooltip: 'Next Ayah',
+              onItemSelected: (index) => _jumpToAyah(index + 1),
+            ),
+
           // ── Single Docked Floating Audio Player ──
-          const PersistentRecitationPlayer(bottomPadding: 24),
+          const PersistentRecitationPlayer(bottomPadding: 16),
         ],
       ),
     );
@@ -368,51 +385,6 @@ class _SurahReaderScreenState extends ConsumerState<SurahReaderScreen> {
                 isMushaf ? ReadingMode.study : ReadingMode.mushaf,
               );
             },
-          ),
-
-          // Reading Display & Typography Settings
-          IconButton(
-            tooltip: 'Typography & Display Settings',
-            visualDensity: VisualDensity.compact,
-            padding: const EdgeInsets.all(2),
-            constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
-            icon: Container(
-              padding: const EdgeInsets.all(5),
-              decoration: BoxDecoration(
-                color: Colors.white.withValues(alpha: 0.07),
-                borderRadius: BorderRadius.circular(9),
-                border: Border.all(color: Colors.white12),
-              ),
-              child: const Icon(
-                Icons.text_fields_rounded,
-                size: 16,
-                color: Colors.white70,
-              ),
-            ),
-            onPressed: () => RecitationSettingsSheet.show(context),
-          ),
-
-          // Translation Language Toggle
-          GestureDetector(
-            onTap: () => ref.read(translationProvider.notifier).toggle(),
-            child: Container(
-              margin: const EdgeInsets.only(left: 2),
-              padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 5),
-              decoration: BoxDecoration(
-                color: NekiColors.emeraldPrimary.withValues(alpha: 0.25),
-                borderRadius: BorderRadius.circular(9),
-                border: Border.all(color: NekiColors.emeraldLight.withValues(alpha: 0.35)),
-              ),
-              child: Text(
-                translationLang == TranslationLang.bengali ? 'বাং' : 'EN',
-                style: const TextStyle(
-                  fontSize: 11,
-                  fontWeight: FontWeight.bold,
-                  color: NekiColors.emeraldLight,
-                  decoration: TextDecoration.none,
-                ),
-              ),
-            ),
           ),
         ],
       ),

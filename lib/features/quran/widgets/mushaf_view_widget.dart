@@ -162,7 +162,7 @@ class MushafViewWidgetState extends ConsumerState<MushafViewWidget> {
 
     return ListView(
       controller: widget.scrollController,
-      padding: const EdgeInsets.fromLTRB(16, 8, 16, 140),
+      padding: const EdgeInsets.fromLTRB(16, 8, 16, 170),
       children: [
         // Ornate Arch Header
         SurahOrnateHeader(

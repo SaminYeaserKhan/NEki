@@ -28,11 +28,23 @@ class AnimatedGradientBackground extends ConsumerStatefulWidget {
   /// If `true`, stars twinkle during dark-sky hours.
   final bool showStars;
 
+  /// If `true`, renders the sun/moon celestial body.
+  final bool showCelestialBody;
+
+  /// If `true`, renders animated drifting clouds.
+  final bool showClouds;
+
+  /// If `true`, renders animated birds during daytime.
+  final bool showBirds;
+
   const AnimatedGradientBackground({
     super.key,
     this.child,
     this.showMosque = true,
     this.showStars = true,
+    this.showCelestialBody = true,
+    this.showClouds = true,
+    this.showBirds = true,
   });
 
   @override
@@ -117,27 +129,29 @@ class _AnimatedGradientBackgroundState extends ConsumerState<AnimatedGradientBac
             ),
 
           // ── Celestial Body (Sun/Moon) ──
-          Positioned.fill(
-            child: CelestialBodyWidget(hour: hour),
-          ),
+          if (widget.showCelestialBody)
+            Positioned.fill(
+              child: CelestialBodyWidget(hour: hour),
+            ),
 
           // ── Clouds ──
-          Positioned.fill(
-            child: AnimatedBuilder(
-              animation: _envController,
-              builder: (context, _) {
-                return CustomPaint(
-                  painter: CloudsPainter(
-                    animationValue: _envController.value,
-                    hour: hour,
-                  ),
-                );
-              },
+          if (widget.showClouds)
+            Positioned.fill(
+              child: AnimatedBuilder(
+                animation: _envController,
+                builder: (context, _) {
+                  return CustomPaint(
+                    painter: CloudsPainter(
+                      animationValue: _envController.value,
+                      hour: hour,
+                    ),
+                  );
+                },
+              ),
             ),
-          ),
 
           // ── Birds ──
-          if (!isDark)
+          if (widget.showBirds && !isDark)
             Positioned.fill(
               child: AnimatedBuilder(
                 animation: _envController,

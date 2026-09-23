@@ -7,6 +7,8 @@ import 'package:google_fonts/google_fonts.dart';
 import 'package:quran/quran.dart' as quran;
 
 import '../../../core/theme/neki_colors.dart';
+import '../../dua/dua_provider.dart';
+import '../../hadith/hadith_provider.dart';
 import '../../quran/utils/quran_verse_helper.dart';
 import '../providers/recitation_audio_provider.dart';
 import '../services/pronunciation_service.dart';
@@ -15,7 +17,7 @@ import 'audio_visualizer_widget.dart';
 enum RecordingState { idle, recording, analyzing, completed }
 
 /// Interactive vocalization and pronunciation evaluation studio modal.
-/// Supports uninterrupted sequential practice across multiple verses.
+/// Supports uninterrupted sequential practice across Quran, Duas, and Hadiths.
 class PronunciationCheckerModal extends ConsumerStatefulWidget {
   final String title;
   final String arabicText;
@@ -23,6 +25,10 @@ class PronunciationCheckerModal extends ConsumerStatefulWidget {
   final String? translation;
   final int? surahNumber;
   final int? verseNumber;
+  final Dua? dua;
+  final HadithEntry? hadith;
+  final VoidCallback? onNext;
+  final VoidCallback? onPrevious;
 
   const PronunciationCheckerModal({
     super.key,
@@ -32,6 +38,10 @@ class PronunciationCheckerModal extends ConsumerStatefulWidget {
     this.translation,
     this.surahNumber,
     this.verseNumber,
+    this.dua,
+    this.hadith,
+    this.onNext,
+    this.onPrevious,
   });
 
   static Future<void> show(
@@ -42,6 +52,10 @@ class PronunciationCheckerModal extends ConsumerStatefulWidget {
     String? translation,
     int? surahNumber,
     int? verseNumber,
+    Dua? dua,
+    HadithEntry? hadith,
+    VoidCallback? onNext,
+    VoidCallback? onPrevious,
   }) {
     return showModalBottomSheet(
       context: context,
@@ -54,6 +68,10 @@ class PronunciationCheckerModal extends ConsumerStatefulWidget {
         translation: translation,
         surahNumber: surahNumber,
         verseNumber: verseNumber,
+        dua: dua,
+        hadith: hadith,
+        onNext: onNext,
+        onPrevious: onPrevious,
       ),
     );
   }
@@ -158,6 +176,32 @@ class _PronunciationCheckerModalState
           _result = null;
         });
       }
+    }
+  }
+
+  void _playAuthenticAudio() {
+    final audioNotifier = ref.read(recitationAudioProvider.notifier);
+    final audioState = ref.read(recitationAudioProvider);
+
+    if (audioState.isPlaying) {
+      audioNotifier.pause();
+      return;
+    }
+
+    if (widget.dua != null) {
+      audioNotifier.playDua(widget.dua!);
+    } else if (widget.hadith != null) {
+      audioNotifier.playHadith(widget.hadith!);
+    } else if (widget.surahNumber != null && _verseNumber != null) {
+      audioNotifier.playVerse(widget.surahNumber!, _verseNumber!);
+    } else {
+      audioNotifier.playArabicPronunciation(
+        title: _title,
+        subtitle: 'Authentic Vocalization',
+        arabicText: _arabicText,
+        surahNumber: widget.surahNumber,
+        verseNumber: _verseNumber,
+      );
     }
   }
 
@@ -400,6 +444,45 @@ class _PronunciationCheckerModalState
             color: NekiColors.emeraldLight,
             decoration: TextDecoration.none,
           ),
+        ),
+        const SizedBox(height: 18),
+
+        // In-Modal Authentic Audio Preview Button
+        Consumer(
+          builder: (context, ref, _) {
+            final audioState = ref.watch(recitationAudioProvider);
+            final isAudioPlaying = audioState.isPlaying;
+
+            return OutlinedButton.icon(
+              onPressed: _playAuthenticAudio,
+              icon: Icon(
+                isAudioPlaying ? Icons.pause_circle_filled_rounded : Icons.volume_up_rounded,
+                size: 19,
+                color: NekiColors.emeraldLight,
+              ),
+              label: Text(
+                isAudioPlaying
+                    ? 'Pause Authentic Recitation'
+                    : 'Listen to Authentic Pronunciation',
+                style: const TextStyle(
+                  fontSize: 12.5,
+                  fontWeight: FontWeight.bold,
+                  color: NekiColors.emeraldLight,
+                ),
+              ),
+              style: OutlinedButton.styleFrom(
+                side: BorderSide(
+                  color: NekiColors.emeraldLight.withValues(alpha: isAudioPlaying ? 0.9 : 0.45),
+                  width: 1.3,
+                ),
+                backgroundColor: isAudioPlaying
+                    ? NekiColors.emeraldPrimary.withValues(alpha: 0.22)
+                    : Colors.white.withValues(alpha: 0.04),
+                padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 11),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+              ),
+            );
+          },
         ),
       ],
     );
@@ -705,32 +788,34 @@ class _PronunciationCheckerModalState
 
         const SizedBox(height: 14),
 
-        // Action Buttons: Master Reciter, Retry, and Next Ayah
+        // Action Buttons: Master Reciter / Listen, Retry, and Next
         Row(
           children: [
-            if (widget.surahNumber != null && _verseNumber != null) ...[
-              Expanded(
-                child: OutlinedButton.icon(
-                  onPressed: () {
-                    ref.read(recitationAudioProvider.notifier).playVerse(
-                          widget.surahNumber!,
-                          _verseNumber!,
-                        );
-                  },
-                  style: OutlinedButton.styleFrom(
-                    foregroundColor: NekiColors.emeraldLight,
-                    side: const BorderSide(color: NekiColors.emeraldLight),
-                    padding: const EdgeInsets.symmetric(vertical: 12),
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(14),
-                    ),
+            Expanded(
+              child: OutlinedButton.icon(
+                onPressed: _playAuthenticAudio,
+                style: OutlinedButton.styleFrom(
+                  foregroundColor: NekiColors.emeraldLight,
+                  side: const BorderSide(color: NekiColors.emeraldLight),
+                  padding: const EdgeInsets.symmetric(vertical: 12),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(14),
                   ),
-                  icon: const Icon(Icons.volume_up_rounded, size: 18),
-                  label: const Text('Master Reciter'),
+                ),
+                icon: Icon(
+                  ref.watch(recitationAudioProvider).isPlaying
+                      ? Icons.pause_rounded
+                      : Icons.volume_up_rounded,
+                  size: 18,
+                ),
+                label: Text(
+                  widget.surahNumber != null
+                      ? 'Master Reciter'
+                      : (ref.watch(recitationAudioProvider).isPlaying ? 'Pause' : 'Listen'),
                 ),
               ),
-              const SizedBox(width: 8),
-            ],
+            ),
+            const SizedBox(width: 8),
             Expanded(
               child: ElevatedButton.icon(
                 onPressed: _reset,
@@ -746,11 +831,17 @@ class _PronunciationCheckerModalState
                 label: const Text('Try Again'),
               ),
             ),
-            if (hasNext) ...[
+            if (hasNext || widget.onNext != null) ...[
               const SizedBox(width: 8),
               Expanded(
                 child: ElevatedButton.icon(
-                  onPressed: _nextAyah,
+                  onPressed: () {
+                    if (hasNext) {
+                      _nextAyah();
+                    } else if (widget.onNext != null) {
+                      widget.onNext!();
+                    }
+                  },
                   style: ElevatedButton.styleFrom(
                     backgroundColor: NekiColors.emeraldPrimary,
                     foregroundColor: Colors.white,
@@ -760,7 +851,7 @@ class _PronunciationCheckerModalState
                     ),
                   ),
                   icon: const Icon(Icons.arrow_forward_rounded, size: 18),
-                  label: const Text('Next Ayah'),
+                  label: Text(widget.surahNumber != null ? 'Next Ayah' : 'Next'),
                 ),
               ),
             ],

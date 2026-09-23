@@ -128,7 +128,7 @@ class VerseStudyViewWidgetState extends ConsumerState<VerseStudyViewWidget> {
       itemPositionsListener: _itemPositionsListener,
       initialScrollIndex: widget.initialVerse > 1 ? widget.initialVerse : 0,
       initialAlignment: widget.initialVerse > 1 ? 0.03 : 0.0,
-      padding: const EdgeInsets.fromLTRB(16, 8, 16, 140),
+      padding: const EdgeInsets.fromLTRB(16, 8, 16, 170),
       itemCount: count + 1,
       itemBuilder: (context, index) {
         if (index == 0) {
@@ -202,7 +202,6 @@ class _VerseStudyRow extends StatelessWidget {
   final VoidCallback onVocalizeTap;
 
   const _VerseStudyRow({
-    super.key,
     required this.surahNumber,
     required this.verseNumber,
     this.transliteration,
@@ -380,18 +379,20 @@ class _VerseStudyRow extends StatelessWidget {
           const SizedBox(height: 14),
 
           // ── Arabic Scripture ──
-          Text(
-            arabicText,
-            style: arabicStyle,
-            textAlign: TextAlign.right,
-            textDirection: TextDirection.rtl,
-          ),
+          if (settings.showArabic) ...[
+            Text(
+              arabicText,
+              style: arabicStyle,
+              textAlign: TextAlign.right,
+              textDirection: TextDirection.rtl,
+            ),
+          ],
 
           // ── Transliteration Guide (Pronunciation) ──
           if (settings.showTransliteration &&
               transliteration != null &&
               transliteration!.isNotEmpty) ...[
-            const SizedBox(height: 10),
+            if (settings.showArabic) const SizedBox(height: 10),
             Text(
               translationLang == TranslationLang.bengali
                   ? BengaliPhoneticHelper.toBengaliPronunciation(transliteration!)
@@ -408,7 +409,11 @@ class _VerseStudyRow extends StatelessWidget {
 
           // ── Translation ──
           if (settings.showTranslation) ...[
-            const SizedBox(height: 8),
+            if (settings.showArabic ||
+                (settings.showTransliteration &&
+                    transliteration != null &&
+                    transliteration!.isNotEmpty))
+              const SizedBox(height: 8),
             Text(
               translation,
               style: TextStyle(

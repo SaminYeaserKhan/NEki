@@ -4,9 +4,14 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:just_audio/just_audio.dart';
 import 'package:quran/quran.dart' as quran;
 
+import '../../../core/locale/locale_provider.dart';
 import '../../dua/dua_provider.dart';
 import '../../hadith/hadith_provider.dart';
+import '../../quran/quran_provider.dart';
 import '../../quran/utils/quran_verse_helper.dart';
+import '../services/neural_tts_service.dart';
+import '../utils/translation_speech_helper.dart';
+import 'reading_settings_provider.dart';
 
 enum RecitationType { none, quran, dua, hadith }
 
@@ -26,6 +31,10 @@ class RecitationAudioState {
   final Duration duration;
   final double speed;
   final RecitationRepeatMode repeatMode;
+  final AudioTrackMode trackMode;
+  final String? currentArabicText;
+  final Dua? currentDua;
+  final HadithEntry? currentHadith;
 
   const RecitationAudioState({
     this.status = RecitationPlaybackStatus.idle,
@@ -39,6 +48,10 @@ class RecitationAudioState {
     this.duration = Duration.zero,
     this.speed = 1.0,
     this.repeatMode = RecitationRepeatMode.off,
+    this.trackMode = AudioTrackMode.recitation,
+    this.currentArabicText,
+    this.currentDua,
+    this.currentHadith,
   });
 
   bool get isPlaying => status == RecitationPlaybackStatus.playing;
@@ -62,6 +75,10 @@ class RecitationAudioState {
     Duration? duration,
     double? speed,
     RecitationRepeatMode? repeatMode,
+    AudioTrackMode? trackMode,
+    String? currentArabicText,
+    Dua? currentDua,
+    HadithEntry? currentHadith,
   }) {
     return RecitationAudioState(
       status: status ?? this.status,
@@ -75,6 +92,10 @@ class RecitationAudioState {
       duration: duration ?? this.duration,
       speed: speed ?? this.speed,
       repeatMode: repeatMode ?? this.repeatMode,
+      trackMode: trackMode ?? this.trackMode,
+      currentArabicText: currentArabicText ?? this.currentArabicText,
+      currentDua: currentDua ?? this.currentDua,
+      currentHadith: currentHadith ?? this.currentHadith,
     );
   }
 }
@@ -240,10 +261,17 @@ class RecitationAudioNotifier extends Notifier<RecitationAudioState> {
     }
   }
 
-  Future<void> playVerse(int surah, int verse) async {
+  Future<void> playVerse(int surah, int verse, {AudioTrackMode? trackMode}) async {
     final player = _initPlayer();
     final total = quran.getVerseCount(surah);
     final surahName = quran.getSurahName(surah);
+    final cleanArabic = QuranVerseHelper.getCleanVerseText(surah, verse, verseEndSymbol: false);
+    final effectiveMode = trackMode ?? ref.read(readingSettingsProvider).audioTrackMode;
+    final isBn = ref.read(localeProvider) == AppLocale.bangla;
+
+    final String subtitleText = effectiveMode == AudioTrackMode.recitation
+        ? 'Surah $surah • Mishary Rashid Alafasy'
+        : (isBn ? 'বাংলা অনুবাদ • Spoken Audio' : 'English Translation • Spoken Audio');
 
     state = state.copyWith(
       status: RecitationPlaybackStatus.loading,
@@ -252,13 +280,29 @@ class RecitationAudioNotifier extends Notifier<RecitationAudioState> {
       currentVerse: verse,
       totalVersesInSurah: total,
       title: '$surahName • Ayah $verse',
-      subtitle: 'Surah $surah • Mishary Rashid Alafasy',
+      subtitle: subtitleText,
+      trackMode: effectiveMode,
+      currentArabicText: cleanArabic,
+      currentDua: null,
+      currentHadith: null,
       position: Duration.zero,
     );
 
     try {
-      final url = quran.getAudioURLByVerse(surah, verse);
-      await player.setUrl(url);
+      if (effectiveMode == AudioTrackMode.recitation) {
+        final url = quran.getAudioURLByVerse(surah, verse);
+        await player.setUrl(url);
+      } else {
+        final transLang = isBn ? TranslationLang.bengali : TranslationLang.english;
+        final translationText = QuranVerseHelper.getVerseTranslation(surah, verse, transLang);
+        final source = await TranslationSpeechHelper.createTranslationAudioSource(
+          translationText,
+          isBengali: isBn,
+          gender: ref.read(readingSettingsProvider).voiceGender,
+          speed: state.speed,
+        );
+        await player.setAudioSource(source);
+      }
       await player.setSpeed(state.speed);
       await player.play();
       state = state.copyWith(status: RecitationPlaybackStatus.playing);
@@ -267,24 +311,127 @@ class RecitationAudioNotifier extends Notifier<RecitationAudioState> {
     }
   }
 
-  Future<void> playDua(Dua dua) async {
+  /// Mapping of Hadith ID to track number in Sheikh Yasir Al-Failakawi's studio
+  /// recitation of Imam An-Nawawi's 40 Hadiths (Arba'een) archive on Archive.org.
+  static const Map<int, int> hadithNawawiTrackMap = {
+    1: 1, // Bukhari 1: Actions are by intention (Nawawi 1)
+    2: 13, // Bukhari 13: None of you believes until he loves for his brother (Nawawi 13)
+    3: 15, // Bukhari 6018: Speak good or remain silent (Nawawi 15)
+    6: 3, // Bukhari 8: Islam is built on five pillars (Nawawi 3)
+    9: 23, // Muslim 223: Purification is half of faith (Nawawi 23)
+    12: 36, // Muslim 2699: Relieving a believer's hardship & seeking knowledge (Nawawi 36)
+    13: 18, // Tirmidhi 1987: Fear Allah wherever you are (Nawawi 18)
+  };
+
+  /// Resolves the studio Quran recitation URL for Quranic Duas.
+  static String? getDuaAudioUrl(Dua dua) {
+    if (dua.audioUrl != null && dua.audioUrl!.isNotEmpty) {
+      return dua.audioUrl!;
+    }
+    if (dua.isQuranic && dua.surahNumber != null && dua.verseNumber != null) {
+      final s = dua.surahNumber!.toString().padLeft(3, '0');
+      final v = dua.verseNumber!.toString().padLeft(3, '0');
+      return 'https://everyayah.com/data/Alafasy_128kbps/$s$v.mp3';
+    }
+    return null;
+  }
+
+  /// Returns descriptive subtitle for Dua recitation player.
+  static String getDuaSubtitle(Dua dua) {
+    if (dua.isQuranic && dua.surahNumber != null && dua.verseNumber != null) {
+      return '${quran.getSurahName(dua.surahNumber!)}:${dua.verseNumber} • Sheikh Mishary Alafasy';
+    }
+    return 'Arabic Recitation • Authentic Pronunciation';
+  }
+
+  /// Resolves the bundled studio human recitation asset for a Hadith.
+  static String getHadithAudioAsset(HadithEntry hadith) {
+    if (hadith.audioAsset != null && hadith.audioAsset!.isNotEmpty) {
+      return hadith.audioAsset!;
+    }
+    final num = hadith.id ?? hadith.number;
+    return 'assets/audio/hadiths/h$num.mp3';
+  }
+
+  /// Resolves studio reciter audio URL for a Hadith if available.
+  static String? getHadithAudioUrl(HadithEntry hadith) {
+    final track = hadithNawawiTrackMap[hadith.id] ?? hadithNawawiTrackMap[hadith.number];
+    if (track != null) {
+      return 'https://archive.org/download/al-arbaeen_an-nawawi_al-failakawi/$track.mp3';
+    }
+    return null;
+  }
+
+  /// Returns descriptive subtitle for Hadith recitation player.
+  static String getHadithSubtitle(HadithEntry hadith) {
+    return '${hadith.bookName} • Human Arabic Recitation';
+  }
+
+  Future<void> playDua(Dua dua, {AudioTrackMode? trackMode}) async {
     final player = _initPlayer();
+    final effectiveMode = trackMode ?? ref.read(readingSettingsProvider).audioTrackMode;
+    final isBn = ref.read(localeProvider) == AppLocale.bangla;
+
+    final subtitleText = effectiveMode == AudioTrackMode.recitation
+        ? getDuaSubtitle(dua)
+        : (isBn ? 'বাংলা অনুবাদ • Spoken Audio' : 'English Translation • Spoken Audio');
 
     state = state.copyWith(
       status: RecitationPlaybackStatus.loading,
       type: RecitationType.dua,
-      currentSurah: null,
+      currentSurah: dua.surahNumber,
       currentVerse: dua.id,
       title: dua.title,
-      subtitle: dua.category.toUpperCase(),
+      subtitle: subtitleText,
+      trackMode: effectiveMode,
+      currentArabicText: dua.arabic,
+      currentDua: dua,
+      currentHadith: null,
       position: Duration.zero,
     );
 
     try {
-      // Audio pronunciation via secure Islamic audio streaming or TTS pronunciation URL
-      final encodedText = Uri.encodeComponent(dua.arabic);
-      final url = 'https://translate.google.com/translate_tts?ie=UTF-8&q=$encodedText&tl=ar&client=tw-ob';
-      await player.setUrl(url);
+      if (effectiveMode == AudioTrackMode.recitation) {
+        final url = getDuaAudioUrl(dua);
+        if (url != null && url.isNotEmpty) {
+          try {
+            if (url.startsWith('assets/')) {
+              await player.setAsset(url);
+            } else {
+              await player.setUrl(url);
+            }
+          } catch (_) {
+            // Seamless offline fallback to Arabic Neural TTS if network audio stream fails
+            final source = await NeuralTtsService.instance.getAudioSource(
+              text: dua.arabic,
+              langCode: 'ar',
+              gender: ref.read(readingSettingsProvider).voiceGender,
+              speed: state.speed,
+            );
+            await player.setAudioSource(source);
+          }
+        } else {
+          // Authentic Arabic Neural TTS for Prophetic Duas (100% word-for-word accuracy with tashkeel)
+          final source = await NeuralTtsService.instance.getAudioSource(
+            text: dua.arabic,
+            langCode: 'ar',
+            gender: ref.read(readingSettingsProvider).voiceGender,
+            speed: state.speed,
+          );
+          await player.setAudioSource(source);
+        }
+      } else {
+        final translationText = isBn
+            ? (dua.bengali?.trim().isNotEmpty == true ? dua.bengali! : dua.description)
+            : dua.description;
+        final source = await TranslationSpeechHelper.createTranslationAudioSource(
+          translationText,
+          isBengali: isBn,
+          gender: ref.read(readingSettingsProvider).voiceGender,
+          speed: state.speed,
+        );
+        await player.setAudioSource(source);
+      }
       await player.setSpeed(state.speed);
       await player.play();
       state = state.copyWith(status: RecitationPlaybackStatus.playing);
@@ -293,8 +440,14 @@ class RecitationAudioNotifier extends Notifier<RecitationAudioState> {
     }
   }
 
-  Future<void> playHadith(HadithEntry hadith) async {
+  Future<void> playHadith(HadithEntry hadith, {AudioTrackMode? trackMode}) async {
     final player = _initPlayer();
+    final effectiveMode = trackMode ?? ref.read(readingSettingsProvider).audioTrackMode;
+    final isBn = ref.read(localeProvider) == AppLocale.bangla;
+
+    final subtitleText = effectiveMode == AudioTrackMode.recitation
+        ? getHadithSubtitle(hadith)
+        : (isBn ? 'বাংলা অনুবাদ • Spoken Audio' : 'English Translation • Spoken Audio');
 
     state = state.copyWith(
       status: RecitationPlaybackStatus.loading,
@@ -302,14 +455,115 @@ class RecitationAudioNotifier extends Notifier<RecitationAudioState> {
       currentSurah: null,
       currentVerse: hadith.number,
       title: hadith.reference ?? 'Hadith ${hadith.number}',
-      subtitle: hadith.chapter,
+      subtitle: subtitleText,
+      trackMode: effectiveMode,
+      currentArabicText: hadith.arabic,
+      currentHadith: hadith,
+      currentDua: null,
       position: Duration.zero,
     );
 
     try {
-      // Arabic Matn pronunciation
-      final cleanArabic = hadith.arabic.replaceAll(RegExp(r'[0-9]'), '').trim();
-      final snippet = cleanArabic.length > 180 ? cleanArabic.substring(0, 180) : cleanArabic;
+      if (effectiveMode == AudioTrackMode.recitation) {
+        final assetPath = getHadithAudioAsset(hadith);
+        try {
+          await player.setAsset(assetPath);
+        } catch (_) {
+          final studioUrl = getHadithAudioUrl(hadith);
+          if (studioUrl != null) {
+            await player.setUrl(studioUrl);
+          } else {
+            final source = await TranslationSpeechHelper.createTranslationAudioSource(
+              hadith.arabic,
+              isBengali: false,
+              gender: TtsVoiceGender.male,
+              speed: state.speed,
+            );
+            await player.setAudioSource(source);
+          }
+        }
+      } else {
+        final translationText = isBn
+            ? (hadith.bengali?.trim().isNotEmpty == true
+                ? hadith.bengali!
+                : (hadith.english ?? hadith.text))
+            : (hadith.english?.trim().isNotEmpty == true
+                ? hadith.english!
+                : (hadith.bengali ?? hadith.text));
+        final source = await TranslationSpeechHelper.createTranslationAudioSource(
+          translationText,
+          isBengali: isBn,
+          gender: ref.read(readingSettingsProvider).voiceGender,
+          speed: state.speed,
+        );
+        await player.setAudioSource(source);
+      }
+      await player.setSpeed(state.speed);
+      await player.play();
+      state = state.copyWith(status: RecitationPlaybackStatus.playing);
+    } catch (_) {
+      state = state.copyWith(status: RecitationPlaybackStatus.error);
+    }
+  }
+
+  /// Switches audio track mode (Recitation <-> Translation) and seamlessly restarts
+  /// playback of the active item on the newly chosen track.
+  Future<void> switchTrackMode(AudioTrackMode newMode) async {
+    await ref.read(readingSettingsProvider.notifier).setAudioTrackMode(newMode);
+    if (!state.hasAudio) return;
+
+    if (state.type == RecitationType.quran &&
+        state.currentSurah != null &&
+        state.currentVerse != null) {
+      if (state.currentVerse == 0) {
+        await playSurahOpening(state.currentSurah!);
+      } else {
+        await playVerse(state.currentSurah!, state.currentVerse!, trackMode: newMode);
+      }
+    } else if (state.type == RecitationType.dua && state.currentDua != null) {
+      await playDua(state.currentDua!, trackMode: newMode);
+    } else if (state.type == RecitationType.hadith && state.currentHadith != null) {
+      await playHadith(state.currentHadith!, trackMode: newMode);
+    }
+  }
+
+  Future<void> playArabicPronunciation({
+    required String title,
+    required String subtitle,
+    required String arabicText,
+    int? surahNumber,
+    int? verseNumber,
+    Dua? dua,
+    HadithEntry? hadith,
+  }) async {
+    if (dua != null) {
+      await playDua(dua);
+      return;
+    }
+    if (hadith != null) {
+      await playHadith(hadith);
+      return;
+    }
+    if (surahNumber != null && verseNumber != null) {
+      await playVerse(surahNumber, verseNumber);
+      return;
+    }
+
+    final player = _initPlayer();
+    state = state.copyWith(
+      status: RecitationPlaybackStatus.loading,
+      type: RecitationType.dua,
+      currentSurah: surahNumber,
+      currentVerse: verseNumber,
+      title: title,
+      subtitle: subtitle,
+      currentArabicText: arabicText,
+      position: Duration.zero,
+    );
+
+    try {
+      final cleanArabic = arabicText.replaceAll(RegExp(r'[0-9\(\)]'), '').trim();
+      final snippet = cleanArabic.length > 200 ? cleanArabic.substring(0, 200) : cleanArabic;
       final encodedText = Uri.encodeComponent(snippet);
       final url = 'https://translate.google.com/translate_tts?ie=UTF-8&q=$encodedText&tl=ar&client=tw-ob';
       await player.setUrl(url);
@@ -361,6 +615,14 @@ class RecitationAudioNotifier extends Notifier<RecitationAudioState> {
     await seekTo(newPos < Duration.zero ? Duration.zero : newPos);
   }
 
+  /// Fast forwards audio playback by 5 seconds.
+  Future<void> fastForward5Seconds() =>
+      fastForward(const Duration(seconds: 5));
+
+  /// Rewinds audio playback by 5 seconds.
+  Future<void> rewind5Seconds() =>
+      rewind(const Duration(seconds: 5));
+
   Future<void> nextItem() async {
     if (state.type == RecitationType.quran &&
         state.currentSurah != null &&
@@ -394,9 +656,29 @@ class RecitationAudioNotifier extends Notifier<RecitationAudioState> {
     }
   }
 
+  static const List<double> availableSpeeds = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0];
+
   Future<void> setSpeed(double newSpeed) async {
     await _player?.setSpeed(newSpeed);
     state = state.copyWith(speed: newSpeed);
+  }
+
+  /// Decreases playback speed to the nearest lower preset (min 0.5x).
+  Future<void> decreaseSpeed() async {
+    final current = state.speed;
+    final lowerSpeeds = availableSpeeds.where((s) => s < current - 0.01).toList();
+    if (lowerSpeeds.isNotEmpty) {
+      await setSpeed(lowerSpeeds.last);
+    }
+  }
+
+  /// Increases playback speed to the nearest higher preset (max 2.0x).
+  Future<void> increaseSpeed() async {
+    final current = state.speed;
+    final higherSpeeds = availableSpeeds.where((s) => s > current + 0.01).toList();
+    if (higherSpeeds.isNotEmpty) {
+      await setSpeed(higherSpeeds.first);
+    }
   }
 
   void toggleRepeatMode() {

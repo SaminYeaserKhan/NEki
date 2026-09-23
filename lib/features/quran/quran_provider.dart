@@ -3,8 +3,10 @@ import 'package:just_audio/just_audio.dart';
 import 'package:quran/quran.dart' as quran;
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../../core/locale/locale_provider.dart';
+
 // ─────────────────────────────────────────────────────
-//  Translation language preference
+//  Translation language preference (Synced with global locale)
 // ─────────────────────────────────────────────────────
 
 enum TranslationLang { bengali, english }
@@ -14,26 +16,22 @@ class TranslationNotifier extends Notifier<TranslationLang> {
 
   @override
   TranslationLang build() {
-    _loadPersisted();
-    return TranslationLang.bengali; // Default: Bengali
-  }
-
-  Future<void> _loadPersisted() async {
-    final prefs = await SharedPreferences.getInstance();
-    final stored = prefs.getString(_key);
-    if (stored == 'english') state = TranslationLang.english;
+    final currentLocale = ref.watch(localeProvider);
+    return currentLocale == AppLocale.bangla
+        ? TranslationLang.bengali
+        : TranslationLang.english;
   }
 
   Future<void> setLang(TranslationLang lang) async {
-    state = lang;
+    final targetLocale =
+        lang == TranslationLang.bengali ? AppLocale.bangla : AppLocale.english;
+    await ref.read(localeProvider.notifier).setLocale(targetLocale);
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString(_key, lang.name);
   }
 
   Future<void> toggle() async {
-    await setLang(state == TranslationLang.bengali
-        ? TranslationLang.english
-        : TranslationLang.bengali);
+    await ref.read(localeProvider.notifier).toggle();
   }
 }
 

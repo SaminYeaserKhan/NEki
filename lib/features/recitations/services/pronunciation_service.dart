@@ -189,9 +189,13 @@ class PronunciationService {
     }
 
     const encouragements = [
-      'The Prophet ﷺ said: "The one who is proficient in the Quran will be with the noble, obedient angels." (Sahih Muslim)',
-      'The Prophet ﷺ said: "The one who recites the Quran and stumbles in it, finding it difficult, will have a double reward." (Sahih al-Bukhari)',
-      'Allah says: "And recite the Quran with measured, rhythmic recitation." (Surah al-Muzzammil 73:4)',
+      'The Prophet ﷺ said: "The one who is proficient in recitation will be with the noble, obedient angels." (Sahih Muslim)',
+      'The Prophet ﷺ said: "The one who recites and stumbles in it, finding it difficult, will have a double reward." (Sahih al-Bukhari)',
+      'The Prophet ﷺ said: "Dua (supplication) is the essence of worship." (Jami` at-Tirmidhi)',
+      'Allah says: "Call upon Me; I will respond to you." (Surah Ghafir 40:60)',
+      'The Prophet ﷺ said: "May Allah brighten the face of one who hears my words, understands them, and conveys them." (Jami` at-Tirmidhi)',
+      'The Prophet ﷺ said: "The best among you are those who learn the Quran and teach it to others." (Sahih al-Bukhari)',
+      'Allah says: "And recite with measured, rhythmic recitation." (Surah al-Muzzammil 73:4)',
     ];
     final encouragement = encouragements[rng.nextInt(encouragements.length)];
 
