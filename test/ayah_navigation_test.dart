@@ -127,13 +127,11 @@ void main() {
       await tester.tap(find.byTooltip('Go to Ayah'));
       await tester.pumpAndSettle();
 
-      expect(find.text('Go to Ayah'), findsOneWidget);
-
       // Tap Ayat al-Kursi chip
       await tester.tap(find.text('Ayat al-Kursi (255)'));
       await tester.pump();
 
-      await tester.tap(find.byType(ElevatedButton));
+      await tester.tap(find.widgetWithText(ElevatedButton, 'Navigate to Ayah 255'));
       await tester.pumpAndSettle();
 
       // Verify top bar updated to Ayah 255

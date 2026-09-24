@@ -70,5 +70,9 @@
 	<string>Neki requires your location to calculate accurate daily prayer times and determine the Qibla direction.</string>
 	<key>NSLocationAlwaysUsageDescription</key>
 	<string>Neki requires your location to calculate accurate daily prayer times and determine the Qibla direction.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Neki requires microphone access to record and evaluate your Arabic recitation for Quran, Dua, and Hadith pronunciation checking.</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>Neki uses speech recognition to analyze and match your spoken Arabic recitation against authentic scriptures.</string>
 </dict>
 </plist>
