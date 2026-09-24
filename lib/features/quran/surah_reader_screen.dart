@@ -278,9 +278,9 @@ class _SurahReaderScreenState extends ConsumerState<SurahReaderScreen> {
             ),
           ),
 
-          // ── Play Surah Top Navigation Button ──
+          // ── Play Surah / Play All Top Navigation Button ──
           IconButton(
-            tooltip: isPlaying ? 'Pause Surah' : 'Play Surah',
+            tooltip: (isThisSurah && audio.autoAdvance && isPlaying) ? 'Pause Surah' : 'Play Surah',
             visualDensity: VisualDensity.compact,
             padding: const EdgeInsets.all(2),
             constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
@@ -288,22 +288,22 @@ class _SurahReaderScreenState extends ConsumerState<SurahReaderScreen> {
               duration: const Duration(milliseconds: 250),
               padding: const EdgeInsets.all(5),
               decoration: BoxDecoration(
-                gradient: isPlaying
+                gradient: (isThisSurah && audio.autoAdvance && isPlaying)
                     ? const LinearGradient(
                         colors: [NekiColors.emeraldPrimary, Color(0xFF1E5638)],
                       )
                     : null,
-                color: isPlaying
+                color: (isThisSurah && audio.autoAdvance && isPlaying)
                     ? null
                     : NekiColors.emeraldPrimary.withValues(alpha: 0.22),
                 shape: BoxShape.circle,
                 border: Border.all(
-                  color: isPlaying
+                  color: (isThisSurah && audio.autoAdvance && isPlaying)
                       ? NekiColors.goldLight
                       : NekiColors.emeraldLight.withValues(alpha: 0.4),
                   width: 1.2,
                 ),
-                boxShadow: isPlaying
+                boxShadow: (isThisSurah && audio.autoAdvance && isPlaying)
                     ? [
                         BoxShadow(
                           color: NekiColors.emeraldPrimary.withValues(alpha: 0.5),
@@ -323,15 +323,17 @@ class _SurahReaderScreenState extends ConsumerState<SurahReaderScreen> {
                       ),
                     )
                   : Icon(
-                      isPlaying ? Icons.pause_rounded : Icons.play_arrow_rounded,
+                      (isThisSurah && audio.autoAdvance && isPlaying)
+                          ? Icons.pause_rounded
+                          : Icons.play_arrow_rounded,
                       size: 18,
-                      color: isPlaying ? NekiColors.goldLight : NekiColors.emeraldLight,
+                      color: (isThisSurah && audio.autoAdvance && isPlaying)
+                          ? NekiColors.goldLight
+                          : NekiColors.emeraldLight,
                     ),
             ),
             onPressed: () {
-              if (isPlaying) {
-                ref.read(recitationAudioProvider.notifier).togglePlayPause();
-              } else if (isThisSurah && audio.currentVerse != null) {
+              if (isThisSurah && audio.autoAdvance) {
                 ref.read(recitationAudioProvider.notifier).togglePlayPause();
               } else {
                 ref.read(recitationAudioProvider.notifier).playSurah(widget.surahNumber);

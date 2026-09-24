@@ -35,6 +35,7 @@ class RecitationAudioState {
   final String? currentArabicText;
   final Dua? currentDua;
   final HadithEntry? currentHadith;
+  final bool autoAdvance;
 
   const RecitationAudioState({
     this.status = RecitationPlaybackStatus.idle,
@@ -52,6 +53,7 @@ class RecitationAudioState {
     this.currentArabicText,
     this.currentDua,
     this.currentHadith,
+    this.autoAdvance = false,
   });
 
   bool get isPlaying => status == RecitationPlaybackStatus.playing;
@@ -79,6 +81,7 @@ class RecitationAudioState {
     String? currentArabicText,
     Dua? currentDua,
     HadithEntry? currentHadith,
+    bool? autoAdvance,
   }) {
     return RecitationAudioState(
       status: status ?? this.status,
@@ -96,6 +99,7 @@ class RecitationAudioState {
       currentArabicText: currentArabicText ?? this.currentArabicText,
       currentDua: currentDua ?? this.currentDua,
       currentHadith: currentHadith ?? this.currentHadith,
+      autoAdvance: autoAdvance ?? this.autoAdvance,
     );
   }
 }
@@ -105,6 +109,7 @@ class RecitationAudioNotifier extends Notifier<RecitationAudioState> {
   StreamSubscription? _posSub;
   StreamSubscription? _durSub;
   StreamSubscription? _stateSub;
+  bool _isCompleting = false;
 
   @override
   RecitationAudioState build() {
@@ -123,6 +128,7 @@ class RecitationAudioNotifier extends Notifier<RecitationAudioState> {
     _player = AudioPlayer();
 
     _posSub = _player!.positionStream.listen((pos) {
+      if (_isCompleting) return;
       state = state.copyWith(position: pos);
     });
 
@@ -131,13 +137,15 @@ class RecitationAudioNotifier extends Notifier<RecitationAudioState> {
     });
 
     _stateSub = _player!.playerStateStream.listen((ps) {
+      if (_isCompleting) return;
+
       if (ps.processingState == ProcessingState.completed) {
         _onTrackCompleted();
-      } else if (ps.playing) {
+      } else if (ps.playing && ps.processingState != ProcessingState.completed) {
         if (state.status != RecitationPlaybackStatus.playing) {
           state = state.copyWith(status: RecitationPlaybackStatus.playing);
         }
-      } else if (ps.processingState == ProcessingState.ready && !ps.playing) {
+      } else if (!ps.playing) {
         if (state.status == RecitationPlaybackStatus.playing) {
           state = state.copyWith(status: RecitationPlaybackStatus.paused);
         }
@@ -147,44 +155,64 @@ class RecitationAudioNotifier extends Notifier<RecitationAudioState> {
     return _player!;
   }
 
-  void _onTrackCompleted() {
-    if (state.repeatMode == RecitationRepeatMode.verse) {
-      // Loop same verse
-      seekTo(Duration.zero);
-      resume();
-      return;
-    }
+  Future<void> _onTrackCompleted() async {
+    if (_isCompleting) return;
+    _isCompleting = true;
 
-    if (state.type == RecitationType.quran &&
-        state.currentSurah != null &&
-        state.currentVerse != null) {
-      final surah = state.currentSurah!;
-      final total = state.totalVersesInSurah ?? quran.getVerseCount(surah);
-
-      if (state.currentVerse == 0) {
-        // Opening track ("A'udhu billahi minash-shaytanir-rajim, Bismillahir Rahmanir Raheem") finished!
-        // Seamlessly start Ayah 1!
-        playVerse(surah, 1);
-        return;
-      } else if (state.currentVerse! < total) {
-        // Auto-advance to next verse!
-        playVerse(surah, state.currentVerse! + 1);
-        return;
-      } else if (state.currentVerse == total) {
-        // Surah complete! Recite closing "Sadaqallahul Aliyyil Azeem"
-        playSurahConclusion(surah);
-        return;
-      } else if (state.currentVerse! > total && state.repeatMode == RecitationRepeatMode.all) {
-        // Loop Surah back to opening track
-        playSurahOpening(surah);
+    try {
+      if (state.repeatMode == RecitationRepeatMode.verse) {
+        // Loop same verse
+        await seekTo(Duration.zero);
+        await resume();
         return;
       }
-    }
 
-    state = state.copyWith(
-      status: RecitationPlaybackStatus.idle,
-      position: Duration.zero,
-    );
+      // Only auto-advance to subsequent verses if in continuous playback ("Play All" / playSurah mode)
+      if (state.autoAdvance &&
+          state.type == RecitationType.quran &&
+          state.currentSurah != null &&
+          state.currentVerse != null) {
+        final surah = state.currentSurah!;
+        final total = state.totalVersesInSurah ?? quran.getVerseCount(surah);
+
+        if (state.currentVerse == 0) {
+          // Opening track ("A'udhu billahi minash-shaytanir-rajim, Bismillahir Rahmanir Raheem") finished!
+          // Seamlessly start Ayah 1 with autoAdvance enabled!
+          await playVerse(surah, 1, autoAdvance: true);
+          return;
+        } else if (state.currentVerse! < total) {
+          // Auto-advance to next verse in continuous playback!
+          await playVerse(surah, state.currentVerse! + 1, autoAdvance: true);
+          return;
+        } else if (state.currentVerse == total) {
+          // Surah complete! Recite closing "Sadaqallahul Aliyyil Azeem"
+          await playSurahConclusion(surah);
+          return;
+        } else if (state.currentVerse! > total && state.repeatMode == RecitationRepeatMode.all) {
+          // Loop Surah back to opening track
+          await playSurahOpening(surah);
+          return;
+        }
+      }
+
+      // Single verse finished: cleanly pause audio player, reset position, and update state to paused
+      await _player?.pause();
+      await _player?.seek(Duration.zero);
+
+      state = state.copyWith(
+        status: RecitationPlaybackStatus.paused,
+        position: Duration.zero,
+      );
+    } catch (_) {
+      state = state.copyWith(
+        status: RecitationPlaybackStatus.paused,
+        position: Duration.zero,
+      );
+    } finally {
+      // Discard any immediate queued platform events during the completion transition
+      await Future.delayed(const Duration(milliseconds: 150));
+      _isCompleting = false;
+    }
   }
 
   /// Plays the introductory opening audio (first ayah of Surah Al-Fatihah: Bismillah).
@@ -192,7 +220,7 @@ class RecitationAudioNotifier extends Notifier<RecitationAudioState> {
   /// - For Surah 9 (At-Tawbah), starts directly at Ayah 1 as it has no Bismillah.
   Future<void> playSurahOpening(int surah) async {
     if (!QuranVerseHelper.hasOpeningAudio(surah)) {
-      await playVerse(surah, 1);
+      await playVerse(surah, 1, autoAdvance: true);
       return;
     }
     final player = _initPlayer();
@@ -208,6 +236,7 @@ class RecitationAudioNotifier extends Notifier<RecitationAudioState> {
       title: '$surahName • Bismillah',
       subtitle: QuranVerseHelper.basmalahTransliterationEn,
       position: Duration.zero,
+      autoAdvance: true,
     );
 
     try {
@@ -218,7 +247,7 @@ class RecitationAudioNotifier extends Notifier<RecitationAudioState> {
       state = state.copyWith(status: RecitationPlaybackStatus.playing);
     } catch (_) {
       // If opening fails, seamlessly start Ayah 1
-      playVerse(surah, 1);
+      playVerse(surah, 1, autoAdvance: true);
     }
   }
 
@@ -252,16 +281,16 @@ class RecitationAudioNotifier extends Notifier<RecitationAudioState> {
     }
   }
 
-  /// Plays a surah from the beginning with introductory opening (Ayah 1 of Al-Fatihah).
+  /// Plays a surah continuously from the beginning with introductory opening (Play All).
   Future<void> playSurah(int surah, {bool withOpening = true}) async {
     if (withOpening && QuranVerseHelper.hasOpeningAudio(surah)) {
       await playSurahOpening(surah);
     } else {
-      await playVerse(surah, 1);
+      await playVerse(surah, 1, autoAdvance: true);
     }
   }
 
-  Future<void> playVerse(int surah, int verse, {AudioTrackMode? trackMode}) async {
+  Future<void> playVerse(int surah, int verse, {AudioTrackMode? trackMode, bool autoAdvance = false}) async {
     final player = _initPlayer();
     final total = quran.getVerseCount(surah);
     final surahName = quran.getSurahName(surah);
@@ -286,6 +315,7 @@ class RecitationAudioNotifier extends Notifier<RecitationAudioState> {
       currentDua: null,
       currentHadith: null,
       position: Duration.zero,
+      autoAdvance: autoAdvance,
     );
 
     try {
@@ -518,7 +548,7 @@ class RecitationAudioNotifier extends Notifier<RecitationAudioState> {
       if (state.currentVerse == 0) {
         await playSurahOpening(state.currentSurah!);
       } else {
-        await playVerse(state.currentSurah!, state.currentVerse!, trackMode: newMode);
+        await playVerse(state.currentSurah!, state.currentVerse!, trackMode: newMode, autoAdvance: state.autoAdvance);
       }
     } else if (state.type == RecitationType.dua && state.currentDua != null) {
       await playDua(state.currentDua!, trackMode: newMode);
@@ -581,6 +611,9 @@ class RecitationAudioNotifier extends Notifier<RecitationAudioState> {
       await player.pause();
       state = state.copyWith(status: RecitationPlaybackStatus.paused);
     } else if (state.status == RecitationPlaybackStatus.paused || (state.hasAudio && !state.isPlaying)) {
+      if (player.processingState == ProcessingState.completed) {
+        await player.seek(Duration.zero);
+      }
       await player.play();
       state = state.copyWith(status: RecitationPlaybackStatus.playing);
     }
@@ -592,6 +625,9 @@ class RecitationAudioNotifier extends Notifier<RecitationAudioState> {
   }
 
   Future<void> resume() async {
+    if (_player?.processingState == ProcessingState.completed) {
+      await _player?.seek(Duration.zero);
+    }
     await _player?.play();
     state = state.copyWith(status: RecitationPlaybackStatus.playing);
   }
@@ -630,9 +666,9 @@ class RecitationAudioNotifier extends Notifier<RecitationAudioState> {
       final surah = state.currentSurah!;
       final total = state.totalVersesInSurah ?? quran.getVerseCount(surah);
       if (state.currentVerse == 0) {
-        await playVerse(surah, 1);
+        await playVerse(surah, 1, autoAdvance: state.autoAdvance);
       } else if (state.currentVerse! < total) {
-        await playVerse(surah, state.currentVerse! + 1);
+        await playVerse(surah, state.currentVerse! + 1, autoAdvance: state.autoAdvance);
       } else if (state.currentVerse == total) {
         await playSurahConclusion(surah);
       }
@@ -645,7 +681,7 @@ class RecitationAudioNotifier extends Notifier<RecitationAudioState> {
         state.currentVerse != null) {
       final surah = state.currentSurah!;
       if (state.currentVerse! > 1) {
-        await playVerse(surah, state.currentVerse! - 1);
+        await playVerse(surah, state.currentVerse! - 1, autoAdvance: state.autoAdvance);
       } else if (state.currentVerse == 1 && QuranVerseHelper.hasOpeningAudio(surah)) {
         await playSurahOpening(surah);
       } else {

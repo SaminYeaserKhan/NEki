@@ -5,10 +5,10 @@ A modern, privacy-focused Islamic companion app built with Flutter, Riverpod, an
 ---
 
 ## 🌟 Executive Summary: Current Status
-- **Overall Test Coverage**: 107/107 automated unit, widget, and integration tests passing (`flutter test`).
+- **Overall Test Coverage**: 116/116 automated unit, widget, and integration tests passing (`flutter test`).
 - **Static Analysis**: 0 errors, 0 warnings (`flutter analyze`).
 - **Active Branch**: `feature/dua-hadith-ui-and-audio-playback`.
-- **Core Pillars Completed**: Theme & Adaptive Sky Header, Recitations Hub (Quran, Dua, Hadith), Neural TTS & Studio Recitation Audio Engine, 2-Tier Floating Playback System, Digital Tasbih.
+- **Core Pillars Completed**: Theme & Adaptive Sky Header, Recitations Hub (Quran, Dua, Hadith), Neural TTS & Studio Recitation Audio Engine, 2-Tier Floating Playback System, Digital Tasbih, Arabic Pronunciation & Tajweed Checker Studio.
 
 ---
 
@@ -36,7 +36,7 @@ A modern, privacy-focused Islamic companion app built with Flutter, Riverpod, an
   - Bottom panning Ayah pill bar with smooth horizontal scrolling and active verse indicator.
 - [x] **Complete Audio Recitation**: High-quality studio recitations by world-renowned **Sheikh Mishary Rashid Alafasy** (EveryAyah 128kbps) for all 114 Surahs.
 - [x] **Surah Opening & Closing Vocals**: Seamless playback of *Ta'awwudh*, *Bismillah*, and Surah conclusions.
-- [x] **Pronunciation Checker Modal**: Speech recording, waveform analysis, and phoneme scoring tool.
+- [x] **Pronunciation & Tajweed Checker Studio**: Dual-engine Arabic voice recognition (Groq Whisper Large-v3 free tier with scripture vocabulary prompt conditioning + on-device STT fallback), live amplitude visualizer, real-time Arabic text streaming, Arabic orthographic normalizer, word-by-word alignment feedback, and Tajweed rule detection across Quran, Dua, and Hadith.
 - [x] **Comprehensive Reading Settings**: Adjustable Arabic font size, multiple calligraphic fonts, translation visibility toggles, and reciter speed.
 
 ### Milestone 4: Dua System Overhaul & Authentic Audio Mapping
@@ -73,15 +73,23 @@ A modern, privacy-focused Islamic companion app built with Flutter, Riverpod, an
 - [x] **Interactive Dhikr Counter**: Tap-to-count screen with haptic feedback, customizable target counts (33, 99, 100, custom), progress rings, and reset.
 - [x] **Dhikr Presets**: SubhanAllah, Alhamdulillah, Allahu Akbar, Astaghfirullah, and custom phrases with transliteration and translation.
 
-### Milestone 8: Testing & Quality Assurance
-- [x] **107 Automated Tests**: Unit, widget, and integration test coverage across Quran navigation, Dua search, Hadith reader, TTS service, and player controls.
+### Milestone 8: Pronunciation & Tajweed Studio (Dual-Engine AI Evaluation)
+- [x] **Zero-Cost High-Precision Speech Recognition**: Groq Whisper Large-v3 with Scripture Prompt Conditioning, delivering Wispr Flow-grade accuracy (free tier, 2,000 requests/day). Seamless offline on-device speech fallback.
+- [x] **Linguistic & Phonetic Discrepancy Diagnostics**: Letter-level analysis detecting emphatic letters (`ص` vs `س`, `ط` vs `ت`), throat letters (`ع`, `ح`, `خ`, `غ`), interdentals (`ث`, `ذ`), missing Qalqalah bounces (`[قطبجد]`), shortened Shaddah (`ّ`), and omitted words.
+- [x] **Dedicated "Where You Went Wrong & How to Fix" Section**: High-contrast diagnostic cards detailing the exact discrepancy between what was heard and authentic scripture, paired with physical mouth/tongue/Makhraj instructions.
+- [x] **Sticky Zero-Scroll Top Action Bar**: Pinned directly beneath the studio header containing `[🔄 Try Again]` (prominent primary action), `[🔊 Master Reciter]`, `[◀ Prev]`, `[Next Ayah ▶]`, and an Ayah navigation counter badge.
+- [x] **Instant English <-> Bangla Language Switcher**: `[বাং / EN]` button in the top bar allowing 1-tap switching between English and Bangla translations and phonetic pronunciation scripts.
+- [x] **Direct Scripture Card Integration**: Check Recitation button integrated directly on Quran verse study cards, Dua cards, and Hadith cards.
+
+### Milestone 9: Testing & Quality Assurance
+- [x] **119 Automated Tests**: Comprehensive unit and widget tests covering pronunciation evaluation, phonetic matching, sticky top actions, language toggling, navigation, and audio playback.
 - [x] **Zero Analysis Warnings**: 100% clean `flutter analyze`.
 
 ---
 
 ## 🚀 Upcoming Roadmap: In Progress & Planned Features
 
-### Milestone 9: Namaz & Prayer Times (Next Priority)
+### Milestone 10: Namaz & Prayer Times (Next Priority)
 - [ ] **Task 9.1: Location & Prayer Calculation Engine**
   - Integrate GPS geolocation and offline city coordinates lookup.
   - Implement Islamic calculation conventions (MWL, ISNA, Umm al-Qura, Karachi, Egyptian).
@@ -148,7 +156,8 @@ A modern, privacy-focused Islamic companion app built with Flutter, Riverpod, an
 | **Hadith Overhaul & Audio** | ✅ 100% | Bukhari index, sanitizer, 22 voiced chapter audios, bilingual translations. |
 | **Minimized Playback System** | ✅ 100% | 2-tier card, full track name, 5s skips, speed stepper (-/1x/+), mode pill. |
 | **Digital Tasbih** | ✅ 100% | Interactive counter, haptics, presets, custom targets. |
-| **Automated Tests** | ✅ 100% | 107/107 passing tests, 0 lint warnings. |
+| **Pronunciation & Tajweed Studio** | ✅ 100% | Groq Whisper Large-v3, sticky zero-scroll actions, mistake diagnosis, [বাং/EN] toggle. |
+| **Automated Tests** | ✅ 100% | 119/119 passing tests, 0 lint warnings. |
 | **Namaz & Prayer Times** | ⏳ Planned | GPS prayer calculations, Azan alerts, daily prayer tracker. |
 | **Zakat Calculator** | ⏳ Planned | Multi-asset calculator, live Nisab, recipient guide. |
 | **Education & Quiz** | ⏳ Planned | Categorized Islamic trivia, timed challenges, score tracking. |

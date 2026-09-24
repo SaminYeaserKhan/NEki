@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import 'core/config/env.dart';
 import 'core/locale/app_strings.dart';
 import 'core/locale/locale_provider.dart';
 import 'core/navigation/navigation_providers.dart';
@@ -11,8 +12,9 @@ import 'features/home/home_screen.dart';
 import 'features/recitations/recitations_screen.dart';
 import 'features/splash/splash_screen.dart';
 
-void main() {
+void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  await Env.init();
   runApp(
     const ProviderScope(
       child: NekiApp(),

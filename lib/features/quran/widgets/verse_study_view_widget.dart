@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:quran/quran.dart' as quran;
@@ -158,11 +159,8 @@ class VerseStudyViewWidgetState extends ConsumerState<VerseStudyViewWidget> {
           onPlayTap: () {
             if (isCurrentVerse) {
               ref.read(recitationAudioProvider.notifier).togglePlayPause();
-            } else if (verseNum == 1 && (!isThisSurah || audio.currentVerse == null)) {
-              // Starting surah from the beginning -> play opening Ta'awwudh & Basmalah audio first
-              ref.read(recitationAudioProvider.notifier).playSurahOpening(widget.surahNumber);
             } else {
-              ref.read(recitationAudioProvider.notifier).playVerse(widget.surahNumber, verseNum);
+              ref.read(recitationAudioProvider.notifier).playVerse(widget.surahNumber, verseNum, autoAdvance: false);
             }
           },
           onVocalizeTap: () {
@@ -188,7 +186,7 @@ class VerseStudyViewWidgetState extends ConsumerState<VerseStudyViewWidget> {
   }
 }
 
-class _VerseStudyRow extends StatelessWidget {
+class _VerseStudyRow extends ConsumerWidget {
   final int surahNumber;
   final int verseNumber;
   final String? transliteration;
@@ -216,9 +214,11 @@ class _VerseStudyRow extends StatelessWidget {
   });
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     final arabicText = QuranVerseHelper.getCleanVerseText(surahNumber, verseNumber, verseEndSymbol: false);
     final translation = QuranVerseHelper.getVerseTranslation(surahNumber, verseNumber, translationLang);
+    final progress = ref.watch(readingProgressProvider);
+    final isBookmarked = progress.surahNumber == surahNumber && progress.verseNumber == verseNumber;
 
     final arabicStyle = settings.arabicScript == ArabicScript.uthmanic
         ? GoogleFonts.amiriQuran(
@@ -304,65 +304,65 @@ class _VerseStudyRow extends StatelessWidget {
 
               const Spacer(),
 
-              // Quick Vocalize (🎙️)
-              GestureDetector(
-                onTap: onVocalizeTap,
-                child: Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                  decoration: BoxDecoration(
-                    color: NekiColors.gold.withValues(alpha: 0.15),
-                    borderRadius: BorderRadius.circular(8),
-                    border: Border.all(color: NekiColors.goldLight.withValues(alpha: 0.35)),
-                  ),
-                  child: const Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Icon(Icons.mic_rounded, size: 13, color: NekiColors.goldLight),
-                      SizedBox(width: 4),
-                      Text(
-                        'Recite',
-                        style: TextStyle(
-                          fontSize: 11,
-                          fontWeight: FontWeight.bold,
-                          color: NekiColors.goldLight,
-                          decoration: TextDecoration.none,
-                        ),
+              // Quick Copy Action
+              IconButton(
+                constraints: const BoxConstraints(),
+                padding: const EdgeInsets.all(4),
+                tooltip: translationLang == TranslationLang.bengali ? 'কপি করুন' : 'Copy Ayah',
+                icon: const Icon(Icons.copy_rounded, size: 16, color: Colors.white54),
+                onPressed: () {
+                  final surahName = quran.getSurahName(surahNumber);
+                  final textToCopy = '$arabicText\n\n$translation\n($surahName $surahNumber:$verseNumber)';
+                  Clipboard.setData(ClipboardData(text: textToCopy));
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(
+                      content: Row(
+                        children: [
+                          const Icon(Icons.check_circle_rounded, color: NekiColors.emeraldLight, size: 16),
+                          const SizedBox(width: 8),
+                          Text(translationLang == TranslationLang.bengali
+                              ? 'আয়াত কপি করা হয়েছে'
+                              : 'Ayah copied to clipboard'),
+                        ],
                       ),
-                    ],
-                  ),
-                ),
-              ),
-              const SizedBox(width: 8),
-
-              // Play / Pause Icon
-              isLoading
-                  ? const SizedBox(
-                      width: 24,
-                      height: 24,
-                      child: Padding(
-                        padding: EdgeInsets.all(4),
-                        child: CircularProgressIndicator(
-                          strokeWidth: 2,
-                          color: NekiColors.emeraldLight,
-                        ),
-                      ),
-                    )
-                  : IconButton(
-                      constraints: const BoxConstraints(),
-                      padding: EdgeInsets.zero,
-                      icon: Icon(
-                        isPlaying ? Icons.pause_circle_rounded : Icons.play_circle_fill_rounded,
-                        color: isCurrentVerse ? NekiColors.emeraldLight : Colors.white60,
-                        size: 24,
-                      ),
-                      onPressed: onPlayTap,
+                      backgroundColor: const Color(0xFF132B1F),
+                      behavior: SnackBarBehavior.floating,
+                      duration: const Duration(seconds: 1),
                     ),
-              const SizedBox(width: 8),
+                  );
+                },
+              ),
+              const SizedBox(width: 4),
+
+              // Quick Bookmark Action
+              IconButton(
+                constraints: const BoxConstraints(),
+                padding: const EdgeInsets.all(4),
+                tooltip: isBookmarked ? 'Bookmarked' : 'Bookmark',
+                icon: Icon(
+                  isBookmarked ? Icons.bookmark_rounded : Icons.bookmark_border_rounded,
+                  size: 19,
+                  color: isBookmarked ? NekiColors.goldLight : Colors.white54,
+                ),
+                onPressed: () {
+                  ref.read(readingProgressProvider.notifier).update(surahNumber, verseNumber);
+                  final surahName = quran.getSurahName(surahNumber);
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(
+                      content: Text('Saved progress to $surahName Verse $verseNumber'),
+                      backgroundColor: NekiColors.emeraldPrimary,
+                      behavior: SnackBarBehavior.floating,
+                      duration: const Duration(seconds: 1),
+                    ),
+                  );
+                },
+              ),
+              const SizedBox(width: 2),
 
               // Contextual Action Menu Button
               IconButton(
                 constraints: const BoxConstraints(),
-                padding: EdgeInsets.zero,
+                padding: const EdgeInsets.all(4),
                 icon: const Icon(Icons.more_vert_rounded, color: Colors.white38, size: 20),
                 onPressed: () {
                   VerseActionBottomSheet.show(
@@ -424,6 +424,72 @@ class _VerseStudyRow extends StatelessWidget {
               ),
             ),
           ],
+
+          const SizedBox(height: 14),
+
+          // ── Clean Action Strip (Matching Dua & Hadith) ──
+          Row(
+            children: [
+              // Pronunciation Checker ("Recite & Check")
+              Expanded(
+                child: OutlinedButton.icon(
+                  onPressed: onVocalizeTap,
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: NekiColors.goldLight,
+                    side: BorderSide(
+                      color: NekiColors.goldLight.withValues(alpha: 0.45),
+                    ),
+                    padding: const EdgeInsets.symmetric(vertical: 8),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(11),
+                    ),
+                  ),
+                  icon: const Icon(Icons.mic_rounded, size: 15),
+                  label: Text(
+                    translationLang == TranslationLang.bengali ? 'উচ্চারণ যাচাই' : 'Recite & Check',
+                    style: const TextStyle(fontSize: 11.5, fontWeight: FontWeight.bold),
+                  ),
+                ),
+              ),
+              const SizedBox(width: 8),
+
+              // Listen / Play Ayah Button
+              Expanded(
+                child: ElevatedButton.icon(
+                  onPressed: onPlayTap,
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: isPlaying
+                        ? NekiColors.emeraldLight
+                        : NekiColors.emeraldPrimary.withValues(alpha: 0.25),
+                    foregroundColor: isPlaying ? Colors.black87 : Colors.white,
+                    side: BorderSide(
+                      color: NekiColors.emeraldLight.withValues(alpha: isPlaying ? 1.0 : 0.4),
+                    ),
+                    padding: const EdgeInsets.symmetric(vertical: 8),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(11),
+                    ),
+                  ),
+                  icon: isLoading
+                      ? const SizedBox(
+                          width: 14,
+                          height: 14,
+                          child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                        )
+                      : Icon(
+                          isPlaying ? Icons.pause_rounded : Icons.volume_up_rounded,
+                          size: 16,
+                        ),
+                  label: Text(
+                    isPlaying
+                        ? (translationLang == TranslationLang.bengali ? 'বিরতি' : 'Pause')
+                        : (translationLang == TranslationLang.bengali ? 'শুনুন' : 'Play Ayah'),
+                    style: const TextStyle(fontSize: 11.5, fontWeight: FontWeight.bold),
+                  ),
+                ),
+              ),
+            ],
+          ),
         ],
       ),
     );

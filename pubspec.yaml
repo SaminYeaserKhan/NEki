@@ -52,6 +52,8 @@ dependencies:
   edge_tts: ^0.1.5
   path_provider: ^2.1.6
   crypto: ^3.0.7
+  record: ^7.1.1
+  speech_to_text: ^7.5.0
 
 dev_dependencies:
   flutter_test:

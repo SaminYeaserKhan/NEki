@@ -315,15 +315,13 @@ class _SurahTile extends ConsumerWidget {
                           ),
                         )
                       : Icon(
-                          isPlaying ? Icons.pause_rounded : Icons.play_arrow_rounded,
+                          (isThisSurah && audio.autoAdvance && isPlaying) ? Icons.pause_rounded : Icons.play_arrow_rounded,
                           size: 20,
-                          color: isPlaying ? Colors.white : NekiColors.emeraldLight,
+                          color: (isThisSurah && audio.autoAdvance && isPlaying) ? Colors.white : NekiColors.emeraldLight,
                         ),
                 ),
                 onPressed: () {
-                  if (isPlaying) {
-                    ref.read(recitationAudioProvider.notifier).togglePlayPause();
-                  } else if (isThisSurah && audio.currentVerse != null) {
+                  if (isThisSurah && audio.autoAdvance) {
                     ref.read(recitationAudioProvider.notifier).togglePlayPause();
                   } else {
                     ref.read(recitationAudioProvider.notifier).playSurah(surah.number);

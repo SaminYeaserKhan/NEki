@@ -12,7 +12,6 @@ import '../../quran/quran_provider.dart';
 import '../../quran/utils/quran_verse_helper.dart';
 import '../providers/reading_settings_provider.dart';
 import '../providers/recitation_audio_provider.dart';
-import 'pronunciation_checker_modal.dart';
 
 class VerseActionBottomSheet extends ConsumerWidget {
   final int surahNumber;
@@ -227,68 +226,33 @@ class VerseActionBottomSheet extends ConsumerWidget {
 
             const SizedBox(height: 16),
 
-            // ── Primary Action Grid ──
-            Row(
-              children: [
-                // Listen Ayah Button
-                Expanded(
-                  child: ElevatedButton.icon(
-                    onPressed: () {
-                      Navigator.of(context).pop();
-                      if (isThisVersePlaying) {
-                        ref.read(recitationAudioProvider.notifier).togglePlayPause();
-                      } else {
-                        ref.read(recitationAudioProvider.notifier).playVerse(surahNumber, verseNumber);
-                      }
-                    },
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: NekiColors.emeraldPrimary,
-                      foregroundColor: Colors.white,
-                      padding: const EdgeInsets.symmetric(vertical: 12),
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
-                    ),
-                    icon: Icon(
-                      isThisVersePlaying ? Icons.pause_rounded : Icons.volume_up_rounded,
-                      size: 18,
-                    ),
-                    label: Text(
-                      isThisVersePlaying ? 'Pause Audio' : 'Play Ayah',
-                      style: const TextStyle(fontSize: 13, fontWeight: FontWeight.bold),
-                    ),
-                  ),
+            // ── Primary Action: Listen Ayah ──
+            SizedBox(
+              width: double.infinity,
+              child: ElevatedButton.icon(
+                onPressed: () {
+                  Navigator.of(context).pop();
+                  if (isThisVersePlaying) {
+                    ref.read(recitationAudioProvider.notifier).togglePlayPause();
+                  } else {
+                    ref.read(recitationAudioProvider.notifier).playVerse(surahNumber, verseNumber, autoAdvance: false);
+                  }
+                },
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: NekiColors.emeraldPrimary,
+                  foregroundColor: Colors.white,
+                  padding: const EdgeInsets.symmetric(vertical: 12),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
                 ),
-                const SizedBox(width: 10),
-
-                // Recite & Check Tajweed (Microphone Studio)
-                Expanded(
-                  child: ElevatedButton.icon(
-                    onPressed: () {
-                      Navigator.of(context).pop();
-                      PronunciationCheckerModal.show(
-                        context,
-                        title: '$surahNameEn • Ayah $verseNumber',
-                        arabicText: arabicText,
-                        transliteration: transliteration,
-                        translation: translation,
-                        surahNumber: surahNumber,
-                        verseNumber: verseNumber,
-                      );
-                    },
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: NekiColors.gold.withValues(alpha: 0.25),
-                      foregroundColor: NekiColors.goldLight,
-                      side: const BorderSide(color: NekiColors.goldLight),
-                      padding: const EdgeInsets.symmetric(vertical: 12),
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
-                    ),
-                    icon: const Icon(Icons.mic_external_on_rounded, size: 18),
-                    label: const Text(
-                      'Recite & Check',
-                      style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold),
-                    ),
-                  ),
+                icon: Icon(
+                  isThisVersePlaying ? Icons.pause_rounded : Icons.volume_up_rounded,
+                  size: 18,
                 ),
-              ],
+                label: Text(
+                  isThisVersePlaying ? 'Pause Audio' : 'Play Ayah',
+                  style: const TextStyle(fontSize: 13, fontWeight: FontWeight.bold),
+                ),
+              ),
             ),
 
             const SizedBox(height: 10),

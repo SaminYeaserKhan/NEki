@@ -189,4 +189,63 @@ void main() {
     expect(find.text('অনুবাদ'), findsOneWidget);
     expect(find.byIcon(Icons.record_voice_over_rounded), findsOneWidget);
   });
+
+  test('RecitationAudioState autoAdvance flag behavior: playVerse stops, playSurah continues', () {
+    final container = ProviderContainer();
+    addTearDown(container.dispose);
+
+    final notifier = container.read(recitationAudioProvider.notifier);
+
+    // Initial state: autoAdvance is false
+    expect(container.read(recitationAudioProvider).autoAdvance, isFalse);
+
+    // When a single verse is played, autoAdvance is false
+    notifier.state = container.read(recitationAudioProvider).copyWith(
+      type: RecitationType.quran,
+      currentSurah: 112,
+      currentVerse: 1,
+      autoAdvance: false,
+    );
+    expect(container.read(recitationAudioProvider).autoAdvance, isFalse);
+
+    // In continuous playback ("Play All" / playSurah), autoAdvance is true
+    notifier.state = container.read(recitationAudioProvider).copyWith(
+      autoAdvance: true,
+    );
+    expect(container.read(recitationAudioProvider).autoAdvance, isTrue);
+  });
+
+  test('Single verse completion automatically stops and pauses player at start of verse', () {
+    final container = ProviderContainer();
+    addTearDown(container.dispose);
+
+    final notifier = container.read(recitationAudioProvider.notifier);
+
+    // Simulate playing Ayah 1 of Surah 112 with autoAdvance: false
+    notifier.state = RecitationAudioState(
+      status: RecitationPlaybackStatus.playing,
+      type: RecitationType.quran,
+      currentSurah: 112,
+      currentVerse: 1,
+      totalVersesInSurah: 4,
+      position: const Duration(seconds: 4),
+      duration: const Duration(seconds: 4),
+      autoAdvance: false,
+    );
+
+    expect(container.read(recitationAudioProvider).isPlaying, isTrue);
+
+    // Simulate completion of single verse (non-continuous playback)
+    notifier.state = container.read(recitationAudioProvider).copyWith(
+      status: RecitationPlaybackStatus.paused,
+      position: Duration.zero,
+    );
+
+    // Verify player automatically stopped and paused: isPlaying is false, position is 0
+    final state = container.read(recitationAudioProvider);
+    expect(state.isPlaying, isFalse);
+    expect(state.status, equals(RecitationPlaybackStatus.paused));
+    expect(state.position, equals(Duration.zero));
+    expect(state.hasAudio, isTrue);
+  });
 }
