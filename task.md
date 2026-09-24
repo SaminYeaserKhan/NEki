@@ -5,10 +5,10 @@ A modern, privacy-focused Islamic companion app built with Flutter, Riverpod, an
 ---
 
 ## 🌟 Executive Summary: Current Status
-- **Overall Test Coverage**: 116/116 automated unit, widget, and integration tests passing (`flutter test`).
+- **Overall Test Coverage**: 124/124 automated unit, widget, and integration tests passing (`flutter test`).
 - **Static Analysis**: 0 errors, 0 warnings (`flutter analyze`).
-- **Active Branch**: `feature/dua-hadith-ui-and-audio-playback`.
-- **Core Pillars Completed**: Theme & Adaptive Sky Header, Recitations Hub (Quran, Dua, Hadith), Neural TTS & Studio Recitation Audio Engine, 2-Tier Floating Playback System, Digital Tasbih, Arabic Pronunciation & Tajweed Checker Studio.
+- **Active Branch**: `main`.
+- **Core Pillars Completed**: Theme & Adaptive Sky Header, Recitations Hub (Quran, Dua, Hadith), Neural TTS & Studio Recitation Audio Engine, 2-Tier Floating Playback System, Digital Tasbih, Arabic Pronunciation & Tajweed Checker Studio, Single-Verse Auto-Pause & Continuous Full Surah Playback.
 
 ---
 
@@ -37,6 +37,8 @@ A modern, privacy-focused Islamic companion app built with Flutter, Riverpod, an
 - [x] **Complete Audio Recitation**: High-quality studio recitations by world-renowned **Sheikh Mishary Rashid Alafasy** (EveryAyah 128kbps) for all 114 Surahs.
 - [x] **Surah Opening & Closing Vocals**: Seamless playback of *Ta'awwudh*, *Bismillah*, and Surah conclusions.
 - [x] **Pronunciation & Tajweed Checker Studio**: Dual-engine Arabic voice recognition (Groq Whisper Large-v3 free tier with scripture vocabulary prompt conditioning + on-device STT fallback), live amplitude visualizer, real-time Arabic text streaming, Arabic orthographic normalizer, word-by-word alignment feedback, and Tajweed rule detection across Quran, Dua, and Hadith.
+- [x] **Pronunciation Studio Ergonomic Actions & Bilingual Mode**: Pinned top action bar with previous/next Ayah navigation, instant retry button, Master Reciter button, and 1-tap Bengali <-> English translation switch.
+- [x] **Intelligent Auto-Pause & Continuous Surah Recitation Flow**: Individual verse recitations automatically pause and reset upon completion; toolbar 'Play Surah / Play All' plays through the entire Surah continuously.
 - [x] **Comprehensive Reading Settings**: Adjustable Arabic font size, multiple calligraphic fonts, translation visibility toggles, and reciter speed.
 
 ### Milestone 4: Dua System Overhaul & Authentic Audio Mapping
