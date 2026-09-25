@@ -8,6 +8,7 @@ import 'package:quran/quran.dart' as quran;
 
 import '../../../core/theme/neki_colors.dart';
 import '../../../core/utils/bengali_phonetic_helper.dart';
+import '../../../core/widgets/neki_snack_bar.dart';
 import '../../quran/quran_provider.dart';
 import '../../quran/utils/quran_verse_helper.dart';
 import '../providers/reading_settings_provider.dart';
@@ -50,6 +51,9 @@ class VerseActionBottomSheet extends ConsumerWidget {
     final arabicText = QuranVerseHelper.getCleanVerseText(surahNumber, verseNumber, verseEndSymbol: false);
     final translationLang = ref.watch(translationProvider);
     final translation = QuranVerseHelper.getVerseTranslation(surahNumber, verseNumber, translationLang);
+    final bookmarks = ref.watch(quranBookmarkProvider);
+    final isBookmarked = bookmarks.contains('$surahNumber:$verseNumber');
+    final isBn = translationLang == TranslationLang.bengali;
 
     final settings = ref.watch(readingSettingsProvider);
     final audio = ref.watch(recitationAudioProvider);
@@ -264,25 +268,43 @@ class VerseActionBottomSheet extends ConsumerWidget {
                 Expanded(
                   child: OutlinedButton.icon(
                     onPressed: () {
-                      ref.read(readingProgressProvider.notifier).update(surahNumber, verseNumber);
+                      final willBeBookmarked = !isBookmarked;
+                      ref.read(quranBookmarkProvider.notifier).toggle(surahNumber, verseNumber);
                       Navigator.of(context).pop();
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        SnackBar(
-                          content: Text('Saved progress to $surahNameEn Verse $verseNumber'),
-                          behavior: SnackBarBehavior.floating,
-                          backgroundColor: NekiColors.emeraldPrimary,
-                          duration: const Duration(seconds: 1),
-                        ),
+                      NekiSnackBar.showBookmark(
+                        context,
+                        isSaved: willBeBookmarked,
+                        message: willBeBookmarked
+                            ? (isBn
+                                ? '$surahNameEn আয়াত $verseNumber বুকমার্কে সংরক্ষণ করা হয়েছে'
+                                : 'Saved $surahNameEn Verse $verseNumber to Bookmarks')
+                            : (isBn
+                                ? '$surahNameEn আয়াত $verseNumber বুকমার্ক সরানো হয়েছে'
+                                : 'Bookmark removed for $surahNameEn Verse $verseNumber'),
                       );
                     },
                     style: OutlinedButton.styleFrom(
-                      foregroundColor: Colors.white70,
-                      side: const BorderSide(color: Colors.white24),
+                      foregroundColor: isBookmarked ? NekiColors.goldLight : Colors.white70,
+                      side: BorderSide(
+                        color: isBookmarked ? NekiColors.goldLight.withValues(alpha: 0.6) : Colors.white24,
+                      ),
                       padding: const EdgeInsets.symmetric(vertical: 10),
                       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
                     ),
-                    icon: const Icon(Icons.bookmark_border_rounded, size: 16),
-                    label: const Text('Bookmark', style: TextStyle(fontSize: 12)),
+                    icon: Icon(
+                      isBookmarked ? Icons.bookmark_rounded : Icons.bookmark_border_rounded,
+                      size: 16,
+                      color: isBookmarked ? NekiColors.goldLight : Colors.white70,
+                    ),
+                    label: Text(
+                      isBookmarked
+                          ? (isBn ? 'সংরক্ষিত' : 'Bookmarked')
+                          : (isBn ? 'বুকমার্ক' : 'Bookmark'),
+                      style: TextStyle(
+                        fontSize: 12,
+                        fontWeight: isBookmarked ? FontWeight.bold : FontWeight.normal,
+                      ),
+                    ),
                   ),
                 ),
                 const SizedBox(width: 8),
@@ -293,13 +315,9 @@ class VerseActionBottomSheet extends ConsumerWidget {
                     onPressed: () {
                       Clipboard.setData(ClipboardData(text: '$arabicText ($surahNameEn $surahNumber:$verseNumber)'));
                       Navigator.of(context).pop();
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        const SnackBar(
-                          content: Text('Copied Arabic text to clipboard'),
-                          behavior: SnackBarBehavior.floating,
-                          backgroundColor: NekiColors.emeraldPrimary,
-                          duration: Duration(seconds: 1),
-                        ),
+                      NekiSnackBar.showSuccess(
+                        context,
+                        message: isBn ? 'আরবি আয়াত কপি করা হয়েছে' : 'Copied Arabic text to clipboard',
                       );
                     },
                     style: OutlinedButton.styleFrom(
@@ -309,10 +327,36 @@ class VerseActionBottomSheet extends ConsumerWidget {
                       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
                     ),
                     icon: const Icon(Icons.copy_rounded, size: 16),
-                    label: const Text('Copy Text', style: TextStyle(fontSize: 12)),
+                    label: Text(isBn ? 'কপি করুন' : 'Copy Text', style: const TextStyle(fontSize: 12)),
                   ),
                 ),
               ],
+            ),
+            const SizedBox(height: 8),
+
+            // Mark as Last Read Position
+            Center(
+              child: TextButton.icon(
+                onPressed: () {
+                  ref.read(readingProgressProvider.notifier).update(surahNumber, verseNumber);
+                  Navigator.of(context).pop();
+                  NekiSnackBar.show(
+                    context,
+                    message: isBn
+                        ? '$surahNameEn আয়াত $verseNumber পড়ার শেষ অবস্থান হিসেবে সংরক্ষণ করা হয়েছে'
+                        : 'Marked $surahNameEn Verse $verseNumber as last read position',
+                    icon: Icons.history_rounded,
+                    iconColor: NekiColors.goldLight,
+                    badgeText: 'POSITION',
+                    isGoldAccent: true,
+                  );
+                },
+                icon: const Icon(Icons.history_rounded, size: 15, color: NekiColors.goldLight),
+                label: Text(
+                  isBn ? 'পড়ার শেষ স্থান হিসেবে চিহ্নিত করুন' : 'Mark as Last Read Position',
+                  style: const TextStyle(fontSize: 11.5, color: Colors.white60),
+                ),
+              ),
             ),
           ],
         ),

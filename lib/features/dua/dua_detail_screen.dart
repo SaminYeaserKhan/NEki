@@ -9,6 +9,7 @@ import '../../core/locale/locale_provider.dart';
 import '../../core/theme/neki_colors.dart';
 import '../../core/theme/theme_provider.dart';
 import '../../core/utils/bengali_phonetic_helper.dart';
+import '../../core/widgets/neki_snack_bar.dart';
 import '../../core/widgets/recitation_background.dart';
 import '../recitations/providers/reading_settings_provider.dart';
 import '../recitations/providers/recitation_audio_provider.dart';
@@ -523,26 +524,11 @@ class _DuaCardState extends ConsumerState<_DuaCard> {
                       '$translationText'
                       '${dua.reference != null ? "\n(${dua.reference})" : ""}';
                   Clipboard.setData(ClipboardData(text: textToCopy));
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    SnackBar(
-                      content: Row(
-                        children: [
-                          const Icon(Icons.check_circle_rounded,
-                              color: NekiColors.emeraldLight, size: 18),
-                          const SizedBox(width: 8),
-                          Text(locale == AppLocale.bangla
-                              ? 'দো‘আ কপি করা হয়েছে'
-                              : 'Copied Dua to clipboard'),
-                        ],
-                      ),
-                      backgroundColor: const Color(0xFF132B1F),
-                      behavior: SnackBarBehavior.floating,
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(12),
-                        side: const BorderSide(color: NekiColors.emeraldLight),
-                      ),
-                      duration: const Duration(seconds: 1),
-                    ),
+                  NekiSnackBar.showSuccess(
+                    context,
+                    message: locale == AppLocale.bangla
+                        ? 'দো‘আ কপি করা হয়েছে'
+                        : 'Copied Dua to clipboard',
                   );
                 },
               ),
@@ -562,22 +548,18 @@ class _DuaCardState extends ConsumerState<_DuaCard> {
                   color: isBookmarked ? NekiColors.goldLight : Colors.white54,
                 ),
                 onPressed: () {
+                  final willBeBookmarked = !isBookmarked;
                   ref.read(duaBookmarkProvider.notifier).toggle(dua.id);
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    SnackBar(
-                      content: Text(
-                        isBookmarked
-                            ? (locale == AppLocale.bangla
-                                ? 'বুকমার্ক সরানো হয়েছে'
-                                : 'Bookmark removed')
-                            : (locale == AppLocale.bangla
-                                ? 'বুকমার্ক সংরক্ষণ করা হয়েছে'
-                                : 'Saved to Bookmarks'),
-                      ),
-                      backgroundColor: const Color(0xFF132B1F),
-                      behavior: SnackBarBehavior.floating,
-                      duration: const Duration(seconds: 1),
-                    ),
+                  NekiSnackBar.showBookmark(
+                    context,
+                    isSaved: willBeBookmarked,
+                    message: willBeBookmarked
+                        ? (locale == AppLocale.bangla
+                            ? 'বুকমার্কে সংরক্ষণ করা হয়েছে'
+                            : 'Saved to Bookmarks')
+                        : (locale == AppLocale.bangla
+                            ? 'বুকমার্ক সরানো হয়েছে'
+                            : 'Bookmark removed'),
                   );
                 },
               ),

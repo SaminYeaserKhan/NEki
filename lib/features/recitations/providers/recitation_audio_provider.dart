@@ -219,6 +219,7 @@ class RecitationAudioNotifier extends Notifier<RecitationAudioState> {
   /// - For Surah 1 (Al-Fatihah), Ayah 1 is the Bismillah itself, so it starts directly at Ayah 1.
   /// - For Surah 9 (At-Tawbah), starts directly at Ayah 1 as it has no Bismillah.
   Future<void> playSurahOpening(int surah) async {
+    ref.read(readingProgressProvider.notifier).update(surah, 1);
     if (!QuranVerseHelper.hasOpeningAudio(surah)) {
       await playVerse(surah, 1, autoAdvance: true);
       return;
@@ -283,6 +284,7 @@ class RecitationAudioNotifier extends Notifier<RecitationAudioState> {
 
   /// Plays a surah continuously from the beginning with introductory opening (Play All).
   Future<void> playSurah(int surah, {bool withOpening = true}) async {
+    ref.read(readingProgressProvider.notifier).update(surah, 1);
     if (withOpening && QuranVerseHelper.hasOpeningAudio(surah)) {
       await playSurahOpening(surah);
     } else {
@@ -297,6 +299,9 @@ class RecitationAudioNotifier extends Notifier<RecitationAudioState> {
     final cleanArabic = QuranVerseHelper.getCleanVerseText(surah, verse, verseEndSymbol: false);
     final effectiveMode = trackMode ?? ref.read(readingSettingsProvider).audioTrackMode;
     final isBn = ref.read(localeProvider) == AppLocale.bangla;
+
+    // Persist last played / read verse position
+    ref.read(readingProgressProvider.notifier).update(surah, verse);
 
     final String subtitleText = effectiveMode == AudioTrackMode.recitation
         ? 'Surah $surah • Mishary Rashid Alafasy'
