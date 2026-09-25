@@ -17,6 +17,9 @@ import '../../core/widgets/home_content_background.dart';
 import '../quran/quran_provider.dart';
 import '../quran/surah_reader_screen.dart';
 import '../tasbih/tasbih_screen.dart';
+import '../namaz/screens/namaz_screen.dart';
+import '../namaz/widgets/location_selector_sheet.dart';
+import '../namaz/widgets/namaz_home_card.dart';
 import 'prayer_provider.dart';
 
 class HomeScreen extends ConsumerStatefulWidget {
@@ -216,13 +219,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
               SliverToBoxAdapter(
                 child: Padding(
                   padding: const EdgeInsets.symmetric(horizontal: 16),
-                  child: _PlaceholderCard(
-                    icon: Icons.access_time_rounded,
-                    title: s.namazTitle,
-                    subtitle: s.comingSoon,
-                    color: const Color(0xFF26A69A),
-                    hour: hour,
-                  ),
+                  child: NamazHomeCard(hour: hour),
                 ),
               ),
 
@@ -657,7 +654,11 @@ class _ResumeQuranCard extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final progress = ref.watch(readingProgressProvider);
     final surahs = ref.watch(surahListProvider);
-    final surahName = surahs[progress.surahNumber - 1].nameEnglish;
+    final surahName = surahs.isNotEmpty &&
+            progress.surahNumber >= 1 &&
+            progress.surahNumber <= surahs.length
+        ? surahs[progress.surahNumber - 1].nameEnglish
+        : 'Al-Fatihah';
 
     return GestureDetector(
       onTap: () {
@@ -731,7 +732,12 @@ class _HeroPrayerCard extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     return BentoCard(
-      height: 210,
+      height: 215,
+      onTap: () {
+        Navigator.of(context).push(
+          MaterialPageRoute(builder: (_) => const NamazScreen()),
+        );
+      },
       gradient: LinearGradient(
         begin: Alignment.topLeft,
         end: Alignment.bottomRight,
@@ -795,44 +801,131 @@ class _HeroPrayerCard extends ConsumerWidget {
                       ],
                     ),
                   ),
-                  GestureDetector(
-                    onTap: () => ref.read(is24HourProvider.notifier).toggle(),
-                    child: Container(
-                      padding:
-                          const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-                      decoration: BoxDecoration(
-                        color: NekiColors.adaptiveTextSecondary(hour)
-                            .withValues(alpha: 0.15),
-                        borderRadius: BorderRadius.circular(10),
+                  Row(
+                    children: [
+                      // Location Pill
+                      GestureDetector(
+                        onTap: () => LocationSelectorSheet.show(context),
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 8, vertical: 5),
+                          decoration: BoxDecoration(
+                            color: NekiColors.adaptiveTextSecondary(hour)
+                                .withValues(alpha: 0.15),
+                            borderRadius: BorderRadius.circular(10),
+                          ),
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(
+                                waqt.isAutoGps
+                                    ? Icons.my_location_rounded
+                                    : Icons.location_on_rounded,
+                                size: 12,
+                                color: NekiColors.adaptiveTextPrimary(hour),
+                              ),
+                              const SizedBox(width: 4),
+                              Text(
+                                waqt.locationDisplay.split(',').first,
+                                style: TextStyle(
+                                  fontSize: 11,
+                                  fontWeight: FontWeight.bold,
+                                  color: NekiColors.adaptiveTextPrimary(hour),
+                                  decoration: TextDecoration.none,
+                                ),
+                              ),
+                              const SizedBox(width: 2),
+                              Icon(
+                                Icons.keyboard_arrow_down_rounded,
+                                size: 14,
+                                color: NekiColors.adaptiveTextSecondary(hour),
+                              ),
+                            ],
+                          ),
+                        ),
                       ),
-                      child: Text(is24Hour ? '24H' : '12H',
-                          style: TextStyle(
-                            fontSize: 12,
-                            fontWeight: FontWeight.bold,
-                            color: NekiColors.adaptiveTextPrimary(hour),
-                            decoration: TextDecoration.none,
-                          )),
-                    ),
+                      const SizedBox(width: 6),
+                      // 12H / 24H Toggle
+                      GestureDetector(
+                        onTap: () => ref.read(is24HourProvider.notifier).toggle(),
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 8, vertical: 5),
+                          decoration: BoxDecoration(
+                            color: NekiColors.adaptiveTextSecondary(hour)
+                                .withValues(alpha: 0.15),
+                            borderRadius: BorderRadius.circular(10),
+                          ),
+                          child: Text(is24Hour ? '24H' : '12H',
+                              style: TextStyle(
+                                fontSize: 11,
+                                fontWeight: FontWeight.bold,
+                                color: NekiColors.adaptiveTextPrimary(hour),
+                                decoration: TextDecoration.none,
+                              )),
+                        ),
+                      ),
+                    ],
                   ),
                 ],
               ),
               const Spacer(),
-              Text(waqt.currentWaqtName,
-                  style: TextStyle(
-                    fontSize: 16,
-                    fontWeight: FontWeight.w500,
-                    color: NekiColors.adaptiveTextSecondary(hour),
-                    decoration: TextDecoration.none,
-                  )),
-              const SizedBox(height: 2),
-              Text(timeFormatter.format(waqt.currentTime),
-                  style: GoogleFonts.inter(
-                    fontSize: 42,
-                    fontWeight: FontWeight.bold,
-                    color: NekiColors.adaptiveTextPrimary(hour),
-                    height: 1.0,
-                    decoration: TextDecoration.none,
-                  )),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                crossAxisAlignment: CrossAxisAlignment.end,
+                children: [
+                  Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(waqt.currentWaqtName,
+                          style: TextStyle(
+                            fontSize: 16,
+                            fontWeight: FontWeight.w500,
+                            color: NekiColors.adaptiveTextSecondary(hour),
+                            decoration: TextDecoration.none,
+                          )),
+                      const SizedBox(height: 2),
+                      Text(timeFormatter.format(waqt.currentTime),
+                          style: GoogleFonts.inter(
+                            fontSize: 42,
+                            fontWeight: FontWeight.bold,
+                            color: NekiColors.adaptiveTextPrimary(hour),
+                            height: 1.0,
+                            decoration: TextDecoration.none,
+                          )),
+                    ],
+                  ),
+                  Container(
+                    margin: const EdgeInsets.only(bottom: 4),
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 8, vertical: 4),
+                    decoration: BoxDecoration(
+                      color: NekiColors.emeraldPrimary.withValues(alpha: 0.2),
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Text(
+                          'Schedule',
+                          style: TextStyle(
+                            fontSize: 11,
+                            fontWeight: FontWeight.bold,
+                            color: NekiColors.adaptiveTextPrimary(hour),
+                            decoration: TextDecoration.none,
+                          ),
+                        ),
+                        const SizedBox(width: 3),
+                        Icon(
+                          Icons.arrow_forward_ios_rounded,
+                          size: 10,
+                          color: NekiColors.adaptiveTextPrimary(hour),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
               const SizedBox(height: 4),
               Text('${s.endsAt} ${timeFormatter.format(waqt.currentWaqtEnd)}',
                   style: TextStyle(

@@ -7,6 +7,7 @@ import 'package:http/http.dart' as http;
 import 'package:quran/quran.dart' as quran;
 
 import '../../core/theme/neki_colors.dart';
+import '../../core/widgets/neki_snack_bar.dart';
 import '../recitations/providers/reading_settings_provider.dart';
 import '../recitations/providers/recitation_audio_provider.dart';
 import '../recitations/widgets/bottom_panning_nav_bar.dart';
@@ -52,6 +53,11 @@ class _SurahReaderScreenState extends ConsumerState<SurahReaderScreen> {
     _scrollController = ScrollController();
     _currentVisibleVerse = widget.initialVerse.clamp(1, quran.getVerseCount(widget.surahNumber));
     _fetchTransliterations();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) {
+        ref.read(readingProgressProvider.notifier).update(widget.surahNumber, _currentVisibleVerse);
+      }
+    });
   }
 
   Future<void> _fetchTransliterations() async {
@@ -168,6 +174,7 @@ class _SurahReaderScreenState extends ConsumerState<SurahReaderScreen> {
                           onVisibleVerseChanged: (v) {
                             if (_currentVisibleVerse != v && mounted) {
                               setState(() => _currentVisibleVerse = v);
+                              ref.read(readingProgressProvider.notifier).update(widget.surahNumber, v);
                             }
                           },
                         )
@@ -182,6 +189,7 @@ class _SurahReaderScreenState extends ConsumerState<SurahReaderScreen> {
                           onVisibleVerseChanged: (v) {
                             if (_currentVisibleVerse != v && mounted) {
                               setState(() => _currentVisibleVerse = v);
+                              ref.read(readingProgressProvider.notifier).update(widget.surahNumber, v);
                             }
                           },
                         ),
@@ -222,6 +230,8 @@ class _SurahReaderScreenState extends ConsumerState<SurahReaderScreen> {
     final isThisSurah = audio.currentSurah == widget.surahNumber && audio.hasAudio;
     final isPlaying = isThisSurah && audio.isPlaying;
     final isLoading = isThisSurah && audio.isLoading;
+    final bookmarks = ref.watch(quranBookmarkProvider);
+    final isSurahBookmarked = bookmarks.contains('surah:${widget.surahNumber}');
 
     return Container(
       padding: const EdgeInsets.fromLTRB(4, 6, 8, 8),
@@ -361,6 +371,51 @@ class _SurahReaderScreenState extends ConsumerState<SurahReaderScreen> {
               ),
             ),
             onPressed: _showJumpSheet,
+          ),
+
+          // ── Bookmark Surah Toolbar Button ──
+          IconButton(
+            tooltip: isSurahBookmarked
+                ? (translationLang == TranslationLang.bengali ? 'বুকমার্ক সরান' : 'Remove Bookmark')
+                : (translationLang == TranslationLang.bengali ? 'সূরা বুকমার্ক করুন' : 'Bookmark Surah'),
+            visualDensity: VisualDensity.compact,
+            padding: const EdgeInsets.all(2),
+            constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
+            icon: Container(
+              padding: const EdgeInsets.all(5),
+              decoration: BoxDecoration(
+                color: isSurahBookmarked
+                    ? NekiColors.goldLight.withValues(alpha: 0.18)
+                    : Colors.white.withValues(alpha: 0.07),
+                borderRadius: BorderRadius.circular(9),
+                border: Border.all(
+                  color: isSurahBookmarked
+                      ? NekiColors.goldLight.withValues(alpha: 0.5)
+                      : Colors.white12,
+                ),
+              ),
+              child: Icon(
+                isSurahBookmarked ? Icons.bookmark_rounded : Icons.bookmark_border_rounded,
+                size: 16,
+                color: isSurahBookmarked ? NekiColors.goldLight : Colors.white70,
+              ),
+            ),
+            onPressed: () {
+              final willBeBookmarked = !isSurahBookmarked;
+              ref.read(quranBookmarkProvider.notifier).toggle(widget.surahNumber);
+              final isBn = translationLang == TranslationLang.bengali;
+              NekiSnackBar.showBookmark(
+                context,
+                isSaved: willBeBookmarked,
+                message: willBeBookmarked
+                    ? (isBn
+                        ? '$nameEn বুকমার্কে সংরক্ষণ করা হয়েছে'
+                        : 'Saved $nameEn to bookmarks')
+                    : (isBn
+                        ? '$nameEn বুকমার্ক থেকে সরানো হয়েছে'
+                        : 'Removed $nameEn from bookmarks'),
+              );
+            },
           ),
 
           // Reading Mode Switcher Button (Mushaf <-> Study)

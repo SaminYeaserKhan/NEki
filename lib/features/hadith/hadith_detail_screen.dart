@@ -9,6 +9,7 @@ import '../../core/theme/neki_colors.dart';
 import '../../core/theme/theme_provider.dart';
 import '../../core/utils/bengali_phonetic_helper.dart';
 import '../../core/utils/hadith_text_sanitizer.dart';
+import '../../core/widgets/neki_snack_bar.dart';
 import '../../core/widgets/recitation_background.dart';
 import '../recitations/providers/reading_settings_provider.dart';
 import '../recitations/providers/recitation_audio_provider.dart';
@@ -422,24 +423,9 @@ class _HadithCardState extends ConsumerState<_HadithCard> {
                       '(${widget.hadith.reference ?? "Hadith ${widget.hadith.number}"})'
                       '${widget.hadith.grade != null ? " [${widget.hadith.grade}]" : ""}';
                   Clipboard.setData(ClipboardData(text: textToCopy));
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    SnackBar(
-                      content: Row(
-                        children: [
-                          const Icon(Icons.check_circle_rounded,
-                              color: NekiColors.emeraldLight, size: 18),
-                          const SizedBox(width: 8),
-                          Text(isBangla ? 'হাদিস কপি করা হয়েছে' : 'Copied Hadith to clipboard'),
-                        ],
-                      ),
-                      backgroundColor: const Color(0xFF132B1F),
-                      behavior: SnackBarBehavior.floating,
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(12),
-                        side: const BorderSide(color: NekiColors.emeraldLight),
-                      ),
-                      duration: const Duration(seconds: 1),
-                    ),
+                  NekiSnackBar.showSuccess(
+                    context,
+                    message: isBangla ? 'হাদিস কপি করা হয়েছে' : 'Copied Hadith to clipboard',
                   );
                 },
               ),
@@ -454,20 +440,16 @@ class _HadithCardState extends ConsumerState<_HadithCard> {
                   color: isBookmarked ? NekiColors.goldLight : Colors.white54,
                 ),
                 onPressed: () {
+                  final willBeBookmarked = !isBookmarked;
                   ref
                       .read(hadithBookmarkProvider.notifier)
                       .toggle(widget.bookId, widget.hadith.number);
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    SnackBar(
-                      content: Text(
-                        isBookmarked
-                            ? (isBangla ? 'বুকমার্ক সরানো হয়েছে' : 'Bookmark removed')
-                            : (isBangla ? 'বুকমার্ক সংরক্ষণ করা হয়েছে' : 'Saved to Bookmarks'),
-                      ),
-                      backgroundColor: const Color(0xFF132B1F),
-                      behavior: SnackBarBehavior.floating,
-                      duration: const Duration(seconds: 1),
-                    ),
+                  NekiSnackBar.showBookmark(
+                    context,
+                    isSaved: willBeBookmarked,
+                    message: willBeBookmarked
+                        ? (isBangla ? 'বুকমার্কে সংরক্ষণ করা হয়েছে' : 'Saved to Bookmarks')
+                        : (isBangla ? 'বুকমার্ক সরানো হয়েছে' : 'Bookmark removed'),
                   );
                 },
               ),

@@ -8,6 +8,7 @@ import '../../core/theme/neki_colors.dart';
 import '../../core/theme/theme_provider.dart';
 import '../../core/utils/bengali_phonetic_helper.dart';
 import '../../core/utils/hadith_text_sanitizer.dart';
+import '../../core/widgets/neki_snack_bar.dart';
 import '../recitations/providers/reading_settings_provider.dart';
 import '../recitations/providers/recitation_audio_provider.dart';
 import '../recitations/widgets/global_reading_control_bar.dart';
@@ -1473,7 +1474,16 @@ class _HadithStreamCardState extends ConsumerState<_HadithStreamCard> {
                   color: isSaved ? NekiColors.goldLight : Colors.white38,
                 ),
                 onPressed: () {
+                  final willBeBookmarked = !isSaved;
                   ref.read(hadithBookmarkProvider.notifier).toggle(widget.hadith.bookId, widget.hadith.number);
+                  final isBn = ref.read(localeProvider) == AppLocale.bangla;
+                  NekiSnackBar.showBookmark(
+                    context,
+                    isSaved: willBeBookmarked,
+                    message: willBeBookmarked
+                        ? (isBn ? 'বুকমার্কে সংরক্ষণ করা হয়েছে' : 'Saved to Bookmarks')
+                        : (isBn ? 'বুকমার্ক সরানো হয়েছে' : 'Bookmark removed'),
+                  );
                 },
               ),
             ],

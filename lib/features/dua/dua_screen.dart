@@ -7,6 +7,7 @@ import '../../core/locale/locale_provider.dart';
 import '../../core/theme/neki_colors.dart';
 import '../../core/theme/theme_provider.dart';
 import '../../core/utils/bengali_phonetic_helper.dart';
+import '../../core/widgets/neki_snack_bar.dart';
 import '../recitations/providers/reading_settings_provider.dart';
 import '../recitations/providers/recitation_audio_provider.dart';
 import '../recitations/widgets/global_reading_control_bar.dart';
@@ -942,7 +943,16 @@ class _DuaStreamCard extends ConsumerWidget {
                   color: isSaved ? NekiColors.goldLight : Colors.white38,
                 ),
                 onPressed: () {
+                  final willBeBookmarked = !isSaved;
                   ref.read(duaBookmarkProvider.notifier).toggle(dua.id);
+                  final isBn = locale == AppLocale.bangla;
+                  NekiSnackBar.showBookmark(
+                    context,
+                    isSaved: willBeBookmarked,
+                    message: willBeBookmarked
+                        ? (isBn ? 'বুকমার্কে সংরক্ষণ করা হয়েছে' : 'Saved to Bookmarks')
+                        : (isBn ? 'বুকমার্ক সরানো হয়েছে' : 'Bookmark removed'),
+                  );
                 },
               ),
               IconButton(

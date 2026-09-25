@@ -4,6 +4,7 @@ import 'package:quran/quran.dart' as quran;
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../core/locale/locale_provider.dart';
+import 'utils/quran_verse_helper.dart';
 
 // ─────────────────────────────────────────────────────
 //  Translation language preference (Synced with global locale)
@@ -46,38 +47,182 @@ final translationProvider =
 class ReadingProgress {
   final int surahNumber;
   final int verseNumber;
+  final DateTime? lastReadTime;
 
-  const ReadingProgress({this.surahNumber = 1, this.verseNumber = 1});
+  const ReadingProgress({
+    this.surahNumber = 1,
+    this.verseNumber = 1,
+    this.lastReadTime,
+  });
 }
 
 class ReadingProgressNotifier extends Notifier<ReadingProgress> {
   static const _surahKey = 'neki_last_surah';
   static const _verseKey = 'neki_last_verse';
+  static const _timeKey = 'neki_last_read_timestamp';
+
+  bool _hasUpdated = false;
 
   @override
   ReadingProgress build() {
+    _hasUpdated = false;
     _loadPersisted();
     return const ReadingProgress();
   }
 
   Future<void> _loadPersisted() async {
     final prefs = await SharedPreferences.getInstance();
-    final surah = prefs.getInt(_surahKey) ?? 1;
-    final verse = prefs.getInt(_verseKey) ?? 1;
-    state = ReadingProgress(surahNumber: surah, verseNumber: verse);
+    if (_hasUpdated) return;
+    final rawSurah = prefs.getInt(_surahKey) ?? 1;
+    final validSurah = rawSurah.clamp(1, 114);
+    final totalVerses = quran.getVerseCount(validSurah);
+    final rawVerse = prefs.getInt(_verseKey) ?? 1;
+    final validVerse = rawVerse.clamp(1, totalVerses);
+    final timeMillis = prefs.getInt(_timeKey);
+    if (_hasUpdated) return;
+    state = ReadingProgress(
+      surahNumber: validSurah,
+      verseNumber: validVerse,
+      lastReadTime: timeMillis != null ? DateTime.fromMillisecondsSinceEpoch(timeMillis) : null,
+    );
   }
 
   Future<void> update(int surah, int verse) async {
-    state = ReadingProgress(surahNumber: surah, verseNumber: verse);
+    _hasUpdated = true;
+    final validSurah = surah.clamp(1, 114);
+    final totalVerses = quran.getVerseCount(validSurah);
+    final validVerse = verse.clamp(1, totalVerses);
+    final now = DateTime.now();
+    state = ReadingProgress(
+      surahNumber: validSurah,
+      verseNumber: validVerse,
+      lastReadTime: now,
+    );
     final prefs = await SharedPreferences.getInstance();
-    await prefs.setInt(_surahKey, surah);
-    await prefs.setInt(_verseKey, verse);
+    await prefs.setInt(_surahKey, validSurah);
+    await prefs.setInt(_verseKey, validVerse);
+    await prefs.setInt(_timeKey, now.millisecondsSinceEpoch);
   }
 }
 
 final readingProgressProvider =
     NotifierProvider<ReadingProgressNotifier, ReadingProgress>(
         ReadingProgressNotifier.new);
+
+// ─────────────────────────────────────────────────────
+//  Quran Bookmarks (Persistent with SharedPreferences)
+// ─────────────────────────────────────────────────────
+
+class QuranBookmarkNotifier extends Notifier<Set<String>> {
+  static const _key = 'neki_quran_bookmarks';
+
+  @override
+  Set<String> build() {
+    _loadPersisted();
+    return {};
+  }
+
+  Future<void> _loadPersisted() async {
+    final prefs = await SharedPreferences.getInstance();
+    final stored = prefs.getStringList(_key);
+    if (stored != null) state = stored.toSet();
+  }
+
+  Future<void> toggle(int surahNumber, [int? verseNumber]) async {
+    final key = verseNumber != null ? '$surahNumber:$verseNumber' : 'surah:$surahNumber';
+    final updated = Set<String>.from(state);
+    if (updated.contains(key)) {
+      updated.remove(key);
+    } else {
+      updated.add(key);
+    }
+    state = updated;
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setStringList(_key, updated.toList());
+  }
+
+  bool isBookmarked(int surahNumber, [int? verseNumber]) {
+    final key = verseNumber != null ? '$surahNumber:$verseNumber' : 'surah:$surahNumber';
+    return state.contains(key);
+  }
+}
+
+final quranBookmarkProvider =
+    NotifierProvider<QuranBookmarkNotifier, Set<String>>(
+        QuranBookmarkNotifier.new);
+
+class QuranBookmark {
+  final int surahNumber;
+  final int? verseNumber;
+  final String surahNameEn;
+  final String surahNameAr;
+  final String surahNameTranslation;
+  final int totalVerses;
+  final String? arabicText;
+  final String? translationEn;
+  final String? translationBn;
+
+  const QuranBookmark({
+    required this.surahNumber,
+    this.verseNumber,
+    required this.surahNameEn,
+    required this.surahNameAr,
+    required this.surahNameTranslation,
+    required this.totalVerses,
+    this.arabicText,
+    this.translationEn,
+    this.translationBn,
+  });
+
+  bool get isSurah => verseNumber == null;
+  bool get isAyah => verseNumber != null;
+}
+
+final bookmarkedQuranProvider =
+    FutureProvider<List<QuranBookmark>>((ref) async {
+  final bookmarks = ref.watch(quranBookmarkProvider);
+  if (bookmarks.isEmpty) return [];
+
+  final result = <QuranBookmark>[];
+  for (final key in bookmarks) {
+    if (key.startsWith('surah:')) {
+      final s = int.tryParse(key.substring(6));
+      if (s != null && s >= 1 && s <= 114) {
+        result.add(QuranBookmark(
+          surahNumber: s,
+          surahNameEn: quran.getSurahName(s),
+          surahNameAr: quran.getSurahNameArabic(s),
+          surahNameTranslation: quran.getSurahNameEnglish(s),
+          totalVerses: quran.getVerseCount(s),
+        ));
+      }
+    } else {
+      final parts = key.split(':');
+      if (parts.length == 2) {
+        final s = int.tryParse(parts[0]);
+        final v = int.tryParse(parts[1]);
+        if (s != null && v != null && s >= 1 && s <= 114) {
+          final maxVerse = quran.getVerseCount(s);
+          if (v >= 1 && v <= maxVerse) {
+            result.add(QuranBookmark(
+              surahNumber: s,
+              verseNumber: v,
+              surahNameEn: quran.getSurahName(s),
+              surahNameAr: quran.getSurahNameArabic(s),
+              surahNameTranslation: quran.getSurahNameEnglish(s),
+              totalVerses: maxVerse,
+              arabicText: QuranVerseHelper.getCleanVerseText(s, v, verseEndSymbol: false),
+              translationEn: QuranVerseHelper.getVerseTranslation(s, v, TranslationLang.english),
+              translationBn: QuranVerseHelper.getVerseTranslation(s, v, TranslationLang.bengali),
+            ));
+          }
+        }
+      }
+    }
+  }
+
+  return result;
+});
 
 // ─────────────────────────────────────────────────────
 //  Surah list data model

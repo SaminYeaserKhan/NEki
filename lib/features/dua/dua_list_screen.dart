@@ -7,6 +7,7 @@ import 'package:scrollable_positioned_list/scrollable_positioned_list.dart';
 import '../../core/locale/locale_provider.dart';
 import '../../core/theme/neki_colors.dart';
 import '../../core/theme/theme_provider.dart';
+import '../../core/widgets/neki_snack_bar.dart';
 import '../../core/widgets/recitation_background.dart';
 import '../recitations/providers/reading_settings_provider.dart';
 import '../recitations/providers/recitation_audio_provider.dart';
@@ -408,20 +409,9 @@ class _DuaCategoryCard extends ConsumerWidget {
                           '$translationText\n'
                           '${dua.reference != null ? "(${dua.reference})" : ""}';
                       Clipboard.setData(ClipboardData(text: textToCopy));
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        SnackBar(
-                          content: Row(
-                            children: [
-                              const Icon(Icons.check_circle_rounded,
-                                  color: NekiColors.emeraldLight, size: 16),
-                              const SizedBox(width: 8),
-                              Text(isBangla ? 'দো‘আ কপি করা হয়েছে' : 'Dua copied to clipboard'),
-                            ],
-                          ),
-                          backgroundColor: const Color(0xFF132B1F),
-                          behavior: SnackBarBehavior.floating,
-                          duration: const Duration(seconds: 1),
-                        ),
+                      NekiSnackBar.showSuccess(
+                        context,
+                        message: isBangla ? 'দো‘আ কপি করা হয়েছে' : 'Dua copied to clipboard',
                       );
                     },
                   ),
@@ -438,7 +428,15 @@ class _DuaCategoryCard extends ConsumerWidget {
                       color: isBookmarked ? NekiColors.goldLight : Colors.white54,
                     ),
                     onPressed: () {
+                      final willBeBookmarked = !isBookmarked;
                       ref.read(duaBookmarkProvider.notifier).toggle(dua.id);
+                      NekiSnackBar.showBookmark(
+                        context,
+                        isSaved: willBeBookmarked,
+                        message: willBeBookmarked
+                            ? (isBangla ? 'বুকমার্কে সংরক্ষণ করা হয়েছে' : 'Saved to Bookmarks')
+                            : (isBangla ? 'বুকমার্ক সরানো হয়েছে' : 'Bookmark removed'),
+                      );
                     },
                   ),
                 ],

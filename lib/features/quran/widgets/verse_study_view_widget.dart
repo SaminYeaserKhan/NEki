@@ -7,6 +7,7 @@ import 'package:scrollable_positioned_list/scrollable_positioned_list.dart';
 
 import '../../../core/theme/neki_colors.dart';
 import '../../../core/utils/bengali_phonetic_helper.dart';
+import '../../../core/widgets/neki_snack_bar.dart';
 import '../../recitations/providers/reading_settings_provider.dart';
 import '../../recitations/providers/recitation_audio_provider.dart';
 import '../../recitations/widgets/audio_visualizer_widget.dart';
@@ -217,8 +218,8 @@ class _VerseStudyRow extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final arabicText = QuranVerseHelper.getCleanVerseText(surahNumber, verseNumber, verseEndSymbol: false);
     final translation = QuranVerseHelper.getVerseTranslation(surahNumber, verseNumber, translationLang);
-    final progress = ref.watch(readingProgressProvider);
-    final isBookmarked = progress.surahNumber == surahNumber && progress.verseNumber == verseNumber;
+    final bookmarks = ref.watch(quranBookmarkProvider);
+    final isBookmarked = bookmarks.contains('$surahNumber:$verseNumber');
 
     final arabicStyle = settings.arabicScript == ArabicScript.uthmanic
         ? GoogleFonts.amiriQuran(
@@ -314,21 +315,11 @@ class _VerseStudyRow extends ConsumerWidget {
                   final surahName = quran.getSurahName(surahNumber);
                   final textToCopy = '$arabicText\n\n$translation\n($surahName $surahNumber:$verseNumber)';
                   Clipboard.setData(ClipboardData(text: textToCopy));
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    SnackBar(
-                      content: Row(
-                        children: [
-                          const Icon(Icons.check_circle_rounded, color: NekiColors.emeraldLight, size: 16),
-                          const SizedBox(width: 8),
-                          Text(translationLang == TranslationLang.bengali
-                              ? 'আয়াত কপি করা হয়েছে'
-                              : 'Ayah copied to clipboard'),
-                        ],
-                      ),
-                      backgroundColor: const Color(0xFF132B1F),
-                      behavior: SnackBarBehavior.floating,
-                      duration: const Duration(seconds: 1),
-                    ),
+                  NekiSnackBar.showSuccess(
+                    context,
+                    message: translationLang == TranslationLang.bengali
+                        ? 'আয়াত কপি করা হয়েছে'
+                        : 'Ayah copied to clipboard',
                   );
                 },
               ),
@@ -338,22 +329,29 @@ class _VerseStudyRow extends ConsumerWidget {
               IconButton(
                 constraints: const BoxConstraints(),
                 padding: const EdgeInsets.all(4),
-                tooltip: isBookmarked ? 'Bookmarked' : 'Bookmark',
+                tooltip: isBookmarked
+                    ? (translationLang == TranslationLang.bengali ? 'বুকমার্ক সরান' : 'Remove Bookmark')
+                    : (translationLang == TranslationLang.bengali ? 'বুকমার্ক করুন' : 'Bookmark Ayah'),
                 icon: Icon(
                   isBookmarked ? Icons.bookmark_rounded : Icons.bookmark_border_rounded,
                   size: 19,
                   color: isBookmarked ? NekiColors.goldLight : Colors.white54,
                 ),
                 onPressed: () {
-                  ref.read(readingProgressProvider.notifier).update(surahNumber, verseNumber);
+                  final willBeBookmarked = !isBookmarked;
+                  ref.read(quranBookmarkProvider.notifier).toggle(surahNumber, verseNumber);
                   final surahName = quran.getSurahName(surahNumber);
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    SnackBar(
-                      content: Text('Saved progress to $surahName Verse $verseNumber'),
-                      backgroundColor: NekiColors.emeraldPrimary,
-                      behavior: SnackBarBehavior.floating,
-                      duration: const Duration(seconds: 1),
-                    ),
+                  final isBn = translationLang == TranslationLang.bengali;
+                  NekiSnackBar.showBookmark(
+                    context,
+                    isSaved: willBeBookmarked,
+                    message: willBeBookmarked
+                        ? (isBn
+                            ? '$surahName আয়াত $verseNumber বুকমার্কে সংরক্ষণ করা হয়েছে'
+                            : 'Saved $surahName Verse $verseNumber to Bookmarks')
+                        : (isBn
+                            ? '$surahName আয়াত $verseNumber বুকমার্ক সরানো হয়েছে'
+                            : 'Bookmark removed for $surahName Verse $verseNumber'),
                   );
                 },
               ),
