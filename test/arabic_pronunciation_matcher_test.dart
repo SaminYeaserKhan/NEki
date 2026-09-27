@@ -34,7 +34,7 @@ void main() {
       );
 
       expect(result.overallScore, greaterThanOrEqualTo(90));
-      expect(result.qualityTitle, contains('Mumtāz'));
+      expect(result.qualityTitle, contains('Mumtaz'));
       expect(result.words.length, equals(4));
       for (final word in result.words) {
         expect(word.status, equals(WordPronunciationStatus.perfect));
@@ -78,6 +78,46 @@ void main() {
 
       final hasQalqalah = result.detectedTajweedRules.any((r) => r.name.contains('Qalqalah'));
       expect(hasQalqalah, isTrue);
+    });
+
+    test('deduplicateSpokenText strips whole verse repetitions and stutters', () {
+      const repeated = 'بسم الله الرحمن الرحيم بسم الله الرحمن الرحيم';
+      final deduplicated = ArabicPronunciationMatcher.deduplicateSpokenText(repeated);
+      expect(deduplicated, equals('بسم الله الرحمن الرحيم'));
+
+      const stutter = 'بسم بسم الله الرحمن الرحيم';
+      final cleanStutter = ArabicPronunciationMatcher.deduplicateSpokenText(stutter);
+      expect(cleanStutter, equals('بسم الله الرحمن الرحيم'));
+    });
+
+    test('normalizes باسم to بسم so Bismil is marked perfect instead of yellow', () {
+      expect(ArabicPronunciationMatcher.normalizeArabic('باسم'), equals('بسم'));
+
+      const target = 'بِسْمِ اللَّهِ';
+      const spoken = 'باسم الله';
+
+      final result = ArabicPronunciationMatcher.instance.evaluate(
+        targetArabic: target,
+        spokenArabic: spoken,
+      );
+
+      expect(result.words.first.status, equals(WordPronunciationStatus.perfect));
+    });
+
+    test('populates Bengali diagnostic and guidance fields', () {
+      const target = 'اهْدِنَا الصِّرَاطَ الْمُسْتَقِيمَ';
+      const spoken = 'اهدنا سراط المستقيم';
+
+      final result = ArabicPronunciationMatcher.instance.evaluate(
+        targetArabic: target,
+        spokenArabic: spoken,
+      );
+
+      final mistakeWord = result.words.firstWhere((w) => w.arabicWord == 'الصِّرَاطَ');
+      expect(mistakeWord.issueDescriptionBn, isNotNull);
+      expect(mistakeWord.issueDescriptionBn!.isNotEmpty, isTrue);
+      expect(mistakeWord.correctionActionBn, isNotNull);
+      expect(mistakeWord.correctionActionBn!.isNotEmpty, isTrue);
     });
   });
 }

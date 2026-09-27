@@ -40,7 +40,7 @@ void main() {
     expect(find.text('Ayah 1 of 7'), findsOneWidget);
     expect(find.text('EN'), findsOneWidget);
     expect(find.text('Start Reciting'), findsOneWidget);
-    expect(find.text('Master Reciter'), findsOneWidget);
+    expect(find.text('Listen'), findsOneWidget);
   });
 
   testWidgets('PronunciationCheckerModal language toggle switches text from English to Bangla', (tester) async {
@@ -123,7 +123,7 @@ void main() {
     // Verify completed state renders sticky top action buttons
     expect(find.text('Try Again'), findsOneWidget);
     expect(find.text('Next Ayah'), findsOneWidget);
-    expect(find.text('Master Reciter'), findsOneWidget);
+    expect(find.text('Listen Again'), findsOneWidget);
 
     // Verify celebratory flawless banner when all words are correct
     expect(find.text('MashaAllah! Flawless Pronunciation'), findsOneWidget);
@@ -161,10 +161,32 @@ void main() {
 
     // Verify "Where You Went Wrong & How to Fix" section appears
     expect(find.text('Where You Went Wrong & How to Fix'), findsOneWidget);
-    expect(find.text('Heard: سراط'), findsOneWidget);
+    expect(find.text('What Was Heard'), findsWidgets);
+    expect(find.text('سراط'), findsWidgets);
+    expect(find.byIcon(Icons.volume_up_rounded), findsWidgets);
 
     // Verify actionable "How to Fix: " guidance is rendered
     expect(find.textContaining('How to Fix:'), findsWidgets);
+
+    // Verify small info (i) icon is present on the mistake card
+    final infoIconFinder = find.byIcon(Icons.info_outline_rounded);
+    expect(infoIconFinder, findsWidgets);
+
+    // Scroll until visible and tap the info icon on the mistake card to open the trilingual guidance modal
+    await tester.scrollUntilVisible(infoIconFinder.first, 200);
+    await tester.tap(infoIconFinder.first);
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+
+    // Verify guidance popup appears with English section only in English mode
+    expect(find.text('Detailed Pronunciation Breakdown'), findsOneWidget);
+    expect(find.text('English Pronunciation Guide'), findsOneWidget);
+    expect(find.text('বাংলা উচ্চারণ নির্দেশিকা'), findsNothing);
+    expect(find.text('Pronunciation Comparison'), findsOneWidget);
+
+    // Close the popup modal
+    await tester.tap(find.byIcon(Icons.close_rounded).last);
+    await tester.pump(const Duration(milliseconds: 300));
 
     // Verify sticky action bar is readily available at the top without scrolling
     expect(find.text('Try Again'), findsOneWidget);

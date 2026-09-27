@@ -59,6 +59,7 @@ class SpeechRecognitionService {
   Future<bool> startListening({
     required Function(String interimWords) onResult,
     Function(double soundLevel)? onSoundLevel,
+    ListenMode listenMode = ListenMode.dictation,
   }) async {
     if (!_isInitialized) {
       final success = await initialize();
@@ -82,7 +83,7 @@ class SpeechRecognitionService {
             : null,
         listenOptions: SpeechListenOptions(
           localeId: _activeArabicLocale,
-          listenMode: ListenMode.confirmation,
+          listenMode: listenMode,
           cancelOnError: false,
           partialResults: true,
         ),

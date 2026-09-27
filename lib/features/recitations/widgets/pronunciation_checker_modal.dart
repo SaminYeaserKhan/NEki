@@ -15,13 +15,19 @@ import '../../dua/dua_provider.dart';
 import '../../hadith/hadith_provider.dart';
 import '../../quran/quran_provider.dart';
 import '../../quran/utils/quran_verse_helper.dart';
+import '../../quran/services/quran_transliteration_service.dart';
 import '../providers/recitation_audio_provider.dart';
 import '../services/pronunciation_service.dart';
+import 'package:flutter/services.dart';
+import 'package:just_audio/just_audio.dart';
+
+import '../services/neural_tts_service.dart';
 import '../services/speech_recognition_service.dart';
+import '../services/streaming_word_aligner.dart';
 import '../services/whisper_speech_service.dart';
 import 'audio_visualizer_widget.dart';
 
-enum RecordingState { idle, recording, analyzing, completed }
+enum RecordingState { idle, recording, pausedOnMistake, analyzing, completed }
 
 /// Interactive vocalization and pronunciation evaluation studio modal.
 /// Powered by a Dual-Engine Architecture: Groq Whisper Large-v3 (Wispr Flow accuracy)
@@ -109,8 +115,21 @@ class _PronunciationCheckerModalState
   String _liveSpokenWords = '';
   bool _permissionDenied = false;
   RecordingStartResult? _recordingStartResult;
-  VocalizedWordFeedback? _selectedWordDetail;
   bool _isBangla = false;
+
+  // Real-time interactive recitation state
+  RecitationMode _recitationMode = RecitationMode.singleAyah;
+  StreamingWordAligner? _aligner;
+  RealtimeRecitationSnapshot? _alignerSnapshot;
+  VocalizedWordFeedback? _activeMistake;
+  Timer? _silenceTimer;
+  List<AyahRecitationTarget> _surahTargets = [];
+  int _currentSurahAyahIndex = 0;
+
+  // Single word TTS evaluation player & state
+  AudioPlayer? _wordTtsPlayer;
+  String? _activeTtsKey;
+  bool _isWordTtsLoading = false;
 
   @override
   void initState() {
@@ -121,20 +140,224 @@ class _PronunciationCheckerModalState
     _transliteration = widget.transliteration;
     _translation = widget.translation;
 
+    _wordTtsPlayer = AudioPlayer();
+    _wordTtsPlayer?.playerStateStream.listen((state) {
+      if (state.processingState == ProcessingState.completed) {
+        if (mounted) {
+          setState(() {
+            _activeTtsKey = null;
+            _isWordTtsLoading = false;
+          });
+        }
+      }
+    });
+
     _pulseController = AnimationController(
       vsync: this,
       duration: const Duration(milliseconds: 1400),
     )..repeat(reverse: true);
+
+    // 1. Pre-warm on-device speech recognition to eliminate initial capture delay
+    SpeechRecognitionService.instance.initialize();
+
+    // 2. Pre-fetch whole Surah transliterations asynchronously if viewing a Surah
+    if (widget.surahNumber != null) {
+      QuranTransliterationService.instance
+          .getSurahTransliteration(widget.surahNumber!)
+          .then((map) {
+        if (mounted && (_transliteration == null || _transliteration!.isEmpty)) {
+          final t = map[_verseNumber ?? 1];
+          if (t != null && t.isNotEmpty) {
+            setState(() {
+              _transliteration = t;
+              _initAligner();
+            });
+          }
+        }
+      });
+    }
+
+    _initAligner();
   }
 
   @override
   void dispose() {
-    _timer?.cancel();
+    _cleanupTimers();
     _pulseController.dispose();
+    _wordTtsPlayer?.stop();
+    _wordTtsPlayer?.dispose();
     // Ensure microphone and audio resources are cleanly released
     WhisperSpeechService.instance.cancel();
     SpeechRecognitionService.instance.cancel();
     super.dispose();
+  }
+
+  void _cleanupTimers() {
+    _timer?.cancel();
+    _timer = null;
+    _silenceTimer?.cancel();
+    _silenceTimer = null;
+  }
+
+  void _initAligner() {
+    if (_recitationMode == RecitationMode.singleAyah || widget.surahNumber == null) {
+      final effectiveTrans = (_transliteration != null && _transliteration!.isNotEmpty)
+          ? _transliteration
+          : (widget.surahNumber != null
+              ? QuranTransliterationService.instance.getVerseTransliteration(
+                  widget.surahNumber!,
+                  _verseNumber ?? 1,
+                  arabicText: _arabicText,
+                )
+              : null);
+      _transliteration = effectiveTrans;
+
+      _aligner = StreamingWordAligner.single(
+        surahNumber: widget.surahNumber ?? 1,
+        verseNumber: _verseNumber ?? 1,
+        arabicText: _arabicText,
+        transliteration: effectiveTrans,
+        translation: _translation,
+        enableLiveHalting: true,
+      );
+    } else {
+      final total = quran.getVerseCount(widget.surahNumber!);
+      _surahTargets = [];
+      for (int i = 1; i <= total; i++) {
+        final cleanArabic = QuranVerseHelper.getCleanVerseText(
+          widget.surahNumber!,
+          i,
+          verseEndSymbol: false,
+        );
+        final ayahTransliteration = QuranTransliterationService.instance
+            .getVerseTransliteration(
+          widget.surahNumber!,
+          i,
+          arabicText: cleanArabic,
+        );
+        _surahTargets.add(AyahRecitationTarget(
+          surahNumber: widget.surahNumber!,
+          verseNumber: i,
+          arabicText: cleanArabic,
+          transliteration: ayahTransliteration,
+          translation: QuranVerseHelper.getVerseTranslation(
+            widget.surahNumber!,
+            i,
+            ref.read(translationProvider),
+          ),
+        ));
+      }
+      _aligner = StreamingWordAligner.fullSurah(
+        surahNumber: widget.surahNumber!,
+        surahAyahs: _surahTargets,
+      );
+      _currentSurahAyahIndex = 0;
+      if (_surahTargets.isNotEmpty) {
+        _transliteration = _surahTargets.first.transliteration;
+      }
+    }
+    _alignerSnapshot = _aligner!.snapshot;
+    _activeMistake = null;
+  }
+
+  void _switchMode(RecitationMode newMode) {
+    if (_recitationMode == newMode) return;
+    setState(() {
+      _recitationMode = newMode;
+      _initAligner();
+      _reset();
+    });
+  }
+
+  void _handleLiveTranscript(String words) {
+    if (_aligner == null) return;
+    var update = _aligner!.processTranscript(words);
+
+    while (update.event == RealtimeAlignmentEvent.ayahCompleted &&
+        _recitationMode == RecitationMode.fullSurah &&
+        _aligner!.hasMoreAyahs) {
+      _advanceToNextSurahAyah();
+      update = _aligner!.processTranscript(words);
+    }
+
+    setState(() {
+      _liveSpokenWords = words;
+      _alignerSnapshot = _aligner!.snapshot;
+
+      if (update.event == RealtimeAlignmentEvent.mistakeDetected) {
+        _recordingState = RecordingState.pausedOnMistake;
+        _activeMistake = update.mistakeFeedback;
+        HapticFeedback.lightImpact();
+      } else if (update.event == RealtimeAlignmentEvent.mistakeResolved) {
+        _recordingState = RecordingState.recording;
+        _activeMistake = null;
+        HapticFeedback.mediumImpact();
+      } else if (update.event == RealtimeAlignmentEvent.ayahCompleted) {
+        if (_recitationMode == RecitationMode.singleAyah) {
+          // Auto-stop countdown on single Ayah completion
+          _silenceTimer?.cancel();
+          _silenceTimer = Timer(const Duration(milliseconds: 900), () {
+            if (mounted && _recordingState == RecordingState.recording) {
+              _stopAndEvaluate();
+            }
+          });
+        } else {
+          _advanceToNextSurahAyah();
+        }
+      } else if (update.event == RealtimeAlignmentEvent.surahCompleted) {
+        // Auto-stop on whole Surah completion
+        _silenceTimer?.cancel();
+        _silenceTimer = Timer(const Duration(milliseconds: 900), () {
+          if (mounted && _recordingState == RecordingState.recording) {
+            _stopAndEvaluate();
+          }
+        });
+      }
+    });
+  }
+
+  void _advanceToNextSurahAyah() {
+    if (_aligner == null || !_aligner!.hasMoreAyahs) return;
+
+    final advanced = _aligner!.advanceToNextAyah();
+    if (advanced) {
+      _currentSurahAyahIndex++;
+      final nextAyah = _aligner!.currentAyah;
+      _verseNumber = nextAyah.verseNumber;
+      _arabicText = nextAyah.arabicText;
+      _translation = nextAyah.translation;
+      _transliteration = nextAyah.transliteration;
+      _alignerSnapshot = _aligner!.snapshot;
+      HapticFeedback.lightImpact();
+    }
+  }
+
+  void _skipActiveMistake() {
+    if (_aligner == null) return;
+    final update = _aligner!.skipActiveWord();
+    setState(() {
+      _alignerSnapshot = _aligner!.snapshot;
+      _recordingState = RecordingState.recording;
+      _activeMistake = null;
+      if (update.isSurahFinished) {
+        _stopAndEvaluate();
+      } else if (update.isAyahFinished && _recitationMode == RecitationMode.fullSurah) {
+        _advanceToNextSurahAyah();
+      } else if (update.isAyahFinished && _recitationMode == RecitationMode.singleAyah) {
+        _stopAndEvaluate();
+      }
+    });
+  }
+
+  @visibleForTesting
+  void simulateRealtimeTranscript(String transcript) {
+    if (_aligner == null) {
+      _initAligner();
+    }
+    setState(() {
+      _recordingState = RecordingState.recording;
+    });
+    _handleLiveTranscript(transcript);
   }
 
   @visibleForTesting
@@ -165,40 +388,78 @@ class _PronunciationCheckerModalState
       _recordingStartResult = null;
       _liveSpokenWords = '';
       _soundLevel = 0.0;
+      _activeMistake = null;
+      _initAligner();
     });
 
-    // 1. Begin audio capture for Whisper
-    final startResult = await WhisperSpeechService.instance.startRecording(
-      onSoundLevel: (level) {
-        if (mounted && _recordingState == RecordingState.recording) {
-          setState(() => _soundLevel = level);
-        }
-      },
-    );
+    final hasGroq = ApiKeys.hasGroqKey();
 
-    if (startResult != RecordingStartResult.success) {
-      if (mounted) {
-        setState(() {
-          _recordingStartResult = startResult;
-          _permissionDenied = true;
-        });
+    if (hasGroq) {
+      // 1. Live Groq Whisper Micro-Streaming:
+      // High-precision Quranic speech recognition without microphone contention
+      final targetPrompt = _recitationMode == RecitationMode.fullSurah
+          ? _surahTargets.map((t) => t.arabicText).join(' ')
+          : _arabicText;
+
+      final startResult = await WhisperSpeechService.instance.startLiveStreaming(
+        prompt: targetPrompt,
+        onTranscript: (liveTranscript) {
+          if (mounted &&
+              (_recordingState == RecordingState.recording ||
+                  _recordingState == RecordingState.pausedOnMistake)) {
+            _handleLiveTranscript(liveTranscript);
+          }
+        },
+        onSoundLevel: (level) {
+          if (mounted &&
+              (_recordingState == RecordingState.recording ||
+                  _recordingState == RecordingState.pausedOnMistake)) {
+            setState(() => _soundLevel = level);
+          }
+        },
+      );
+
+      if (startResult == RecordingStartResult.permissionDenied) {
+        if (mounted) setState(() => _permissionDenied = true);
+        return;
       }
-      return;
-    }
+    } else {
+      // 2. Fallback to on-device SpeechRecognitionService if offline / no Groq API key
+      final listenSuccess = await SpeechRecognitionService.instance.startListening(
+        onResult: (words) {
+          if (mounted &&
+              (_recordingState == RecordingState.recording ||
+                  _recordingState == RecordingState.pausedOnMistake)) {
+            _handleLiveTranscript(words);
+          }
+        },
+        onSoundLevel: (level) {
+          if (mounted && _recordingState == RecordingState.recording && _soundLevel == 0.0) {
+            setState(() => _soundLevel = level);
+          }
+        },
+      );
 
-    // 2. Start on-device STT in parallel for live streaming words on screen
-    SpeechRecognitionService.instance.startListening(
-      onResult: (words) {
-        if (mounted && _recordingState == RecordingState.recording) {
-          setState(() => _liveSpokenWords = words);
+      if (!listenSuccess) {
+        if (mounted) {
+          setState(() {
+            _permissionDenied = true;
+          });
         }
-      },
-      onSoundLevel: (level) {
-        if (mounted && _recordingState == RecordingState.recording && _soundLevel == 0.0) {
-          setState(() => _soundLevel = level);
-        }
-      },
-    );
+        return;
+      }
+
+      // Also record audio in background for post-recitation scoring if possible
+      WhisperSpeechService.instance.startRecording(
+        onSoundLevel: (level) {
+          if (mounted &&
+              (_recordingState == RecordingState.recording ||
+                  _recordingState == RecordingState.pausedOnMistake)) {
+            setState(() => _soundLevel = level);
+          }
+        },
+      );
+    }
 
     setState(() {
       _recordingState = RecordingState.recording;
@@ -213,21 +474,140 @@ class _PronunciationCheckerModalState
   }
 
   Future<void> _stopAndEvaluate() async {
-    _timer?.cancel();
+    _cleanupTimers();
     setState(() => _recordingState = RecordingState.analyzing);
 
     // Stop audio recording and native recognizer
     final audioPath = await WhisperSpeechService.instance.stopRecording();
-    final fallbackText = await SpeechRecognitionService.instance.stopListening();
+    String fallbackText = '';
+    if (!ApiKeys.hasGroqKey() || SpeechRecognitionService.instance.isListening) {
+      fallbackText = await SpeechRecognitionService.instance.stopListening();
+    }
 
     final actualSpoken = fallbackText.isNotEmpty ? fallbackText : _liveSpokenWords;
+    final cleanAyahSpoken = _alignerSnapshot?.cleanSpokenAyahText;
+    final spokenToEvaluate = (cleanAyahSpoken != null && cleanAyahSpoken.trim().isNotEmpty)
+        ? cleanAyahSpoken
+        : actualSpoken;
 
     PronunciationResult result;
-    if (audioPath != null) {
+    if (_recitationMode == RecitationMode.fullSurah && widget.surahNumber != null) {
+      final surahName = quran.getSurahName(widget.surahNumber!);
+      final isBengali = _isBangla;
+
+      // 1. Attempt Groq Whisper Large-v3 evaluation of the entire Surah audio
+      String? whisperFullSurahSpoken;
+      if (audioPath != null) {
+        final fullSurahPrompt = _surahTargets.map((t) => t.arabicText).join(' ');
+        whisperFullSurahSpoken = await WhisperSpeechService.instance.transcribeWithWhisper(
+          audioPath: audioPath,
+          targetArabicPrompt: fullSurahPrompt,
+        );
+      }
+
+      if (whisperFullSurahSpoken != null && whisperFullSurahSpoken.trim().isNotEmpty) {
+        final fullSurahArabic = _surahTargets.map((t) => t.arabicText).join(' ');
+        final fullSurahTrans = _surahTargets
+            .map((t) => t.transliteration ?? '')
+            .where((t) => t.isNotEmpty)
+            .join(' ');
+
+        final evaluated = ArabicPronunciationMatcher.instance.evaluate(
+          targetArabic: fullSurahArabic,
+          spokenArabic: whisperFullSurahSpoken,
+          transliteration: fullSurahTrans,
+          recordedDuration: Duration(seconds: _elapsedSeconds),
+          isOffline: false,
+        );
+
+        result = PronunciationResult(
+          overallScore: evaluated.overallScore,
+          qualityTitle: evaluated.qualityTitle,
+          feedbackSummary: isBengali
+              ? 'সূরা $surahName (${_surahTargets.length} আয়াত) গ্রোক হুইস্পার লার্জ-ভি৩ দ্বারা যাচাইকৃত।'
+              : 'Surah $surahName (${_surahTargets.length} Ayahs) verified with Groq Whisper Large-v3.',
+          spokenText: evaluated.spokenText,
+          expectedText: isBengali ? 'সূরা $surahName' : 'Surah $surahName',
+          words: evaluated.words,
+          detectedTajweedRules: evaluated.detectedTajweedRules,
+          encouragement: evaluated.encouragement,
+          encouragementBn: evaluated.encouragementBn,
+          isOfflineFallback: false,
+        );
+      } else {
+        // Fallback to real-time word aligner feedbacks
+        final allWords = <VocalizedWordFeedback>[];
+        final alignerFeedbacks = _aligner?.snapshot.completedWordFeedbacks ?? const [];
+        int feedbackIdx = 0;
+
+        for (final ayahTarget in _surahTargets) {
+          for (int wIdx = 0; wIdx < ayahTarget.displayWords.length; wIdx++) {
+            final displayWord = ayahTarget.displayWords[wIdx];
+            final transWord = wIdx < ayahTarget.transliterationWords.length
+                ? ayahTarget.transliterationWords[wIdx]
+                : '';
+
+            if (feedbackIdx < alignerFeedbacks.length) {
+              allWords.add(alignerFeedbacks[feedbackIdx]);
+              feedbackIdx++;
+            } else {
+              allWords.add(VocalizedWordFeedback(
+                arabicWord: displayWord,
+                spokenWord: null,
+                transliteration: transWord,
+                score: 0.20,
+                status: WordPronunciationStatus.needsPractice,
+                issueDescription: 'This word was not recited.',
+                issueDescriptionBn: 'এই শব্দটি তেলাওয়াত করা হয়নি।',
+                correctionAction: 'Recite all verses of the Surah sequentially.',
+                correctionActionBn: 'সুরার সকল আয়াত ধারাবাহিকভাবে তেলাওয়াত করুন।',
+              ));
+            }
+          }
+        }
+
+        final perfectCount = allWords.where((w) => w.status == WordPronunciationStatus.perfect).length;
+        final goodCount = allWords.where((w) => w.status == WordPronunciationStatus.good).length;
+        final score = allWords.isNotEmpty
+            ? (((perfectCount * 1.0) + (goodCount * 0.8)) / allWords.length * 100).round().clamp(0, 100)
+            : 0;
+
+        final mistakes = _aligner?.snapshot.totalMistakesCount ?? 0;
+
+        final cleanWholeSurahSpoken = ArabicPronunciationMatcher.deduplicateSpokenText(
+          allWords
+              .map((w) => w.spokenWord ?? '')
+              .where((w) => w.isNotEmpty)
+              .join(' '),
+        );
+        final finalSpoken = cleanWholeSurahSpoken.isNotEmpty
+            ? cleanWholeSurahSpoken
+            : ArabicPronunciationMatcher.deduplicateSpokenText(actualSpoken);
+
+        result = PronunciationResult(
+          overallScore: score,
+          qualityTitle: score >= 90
+              ? (isBengali ? 'মুমতাজ! (অসাধারণ তিলাওয়াত)' : 'Mumtaz! (Complete Surah Mastered)')
+              : score >= 80
+                  ? (isBengali ? 'জাইয়্যিদ জিদ্দান! (চমৎকার তিলাওয়াত)' : 'Jayyid Jiddan! (Well Recited)')
+                  : (isBengali ? 'জাইয়্যিদ (উন্নতি সম্ভব)' : 'Jayyid (Good Muraja\'ah)'),
+          feedbackSummary: isBengali
+              ? 'সূরা $surahName (${_surahTargets.length} আয়াত) তিলাওয়াত সম্পন্ন হয়েছে। মোট ভুল শনাক্ত হয়েছে: $mistakes টি।'
+              : 'Completed recitation of Surah $surahName (${_surahTargets.length} Ayahs). Total mistakes encountered: $mistakes.',
+          spokenText: finalSpoken,
+          expectedText: isBengali ? 'সূরা $surahName' : 'Surah $surahName',
+          words: allWords,
+          detectedTajweedRules: const [],
+          encouragement: 'The Prophet (pbuh) said: "The best of you are those who learn the Quran and teach it." (Bukhari)',
+          encouragementBn: 'রাসূলুল্লাহ (সা.) বলেছেন: "তোমাদের মধ্যে সর্বোত্তম সেই ব্যক্তি, যে নিজে কুরআন শিখে এবং অন্যকে শিক্ষা দেয়।" (সহীহ বুখারী)',
+          isOfflineFallback: true,
+        );
+      }
+    } else if (audioPath != null) {
       result = await PronunciationService.instance.evaluateAudioFile(
         audioPath: audioPath,
         targetArabic: _arabicText,
-        fallbackSpokenText: actualSpoken,
+        fallbackSpokenText: spokenToEvaluate,
         transliteration: _transliteration,
         recordedDuration: Duration(seconds: _elapsedSeconds),
       );
@@ -235,7 +615,7 @@ class _PronunciationCheckerModalState
       result = PronunciationService.instance.evaluateRecitation(
         arabicText: _arabicText,
         transliteration: _transliteration,
-        spokenArabic: actualSpoken,
+        spokenArabic: spokenToEvaluate,
         recordedDuration: Duration(seconds: _elapsedSeconds),
         isOffline: true,
       );
@@ -250,15 +630,18 @@ class _PronunciationCheckerModalState
   }
 
   void _reset() {
+    _cleanupTimers();
     WhisperSpeechService.instance.cancel();
     SpeechRecognitionService.instance.cancel();
+    _aligner?.reset();
     setState(() {
       _recordingState = RecordingState.idle;
       _elapsedSeconds = 0;
       _soundLevel = 0.0;
       _liveSpokenWords = '';
       _result = null;
-      _selectedWordDetail = null;
+      _activeMistake = null;
+      _alignerSnapshot = _aligner?.snapshot;
     });
   }
 
@@ -300,20 +683,24 @@ class _PronunciationCheckerModalState
     final nextArabic = QuranVerseHelper.getCleanVerseText(widget.surahNumber!, newNum, verseEndSymbol: false);
     final isBengali = translationLang == TranslationLang.bengali;
     final nextTitle = isBengali
-        ? '${quran.getSurahName(widget.surahNumber!)} • আয়াত $newNum'
-        : '${quran.getSurahName(widget.surahNumber!)} • Ayah $newNum';
+        ? '${quran.getSurahName(widget.surahNumber!)}: আয়াত $newNum'
+        : '${quran.getSurahName(widget.surahNumber!)}: Ayah $newNum';
     final nextTrans = QuranVerseHelper.getVerseTranslation(widget.surahNumber!, newNum, translationLang);
+    final nextPhonetic = QuranTransliterationService.instance.getVerseTransliteration(
+      widget.surahNumber!,
+      newNum,
+      arabicText: nextArabic,
+    );
 
     setState(() {
       _verseNumber = newNum;
       _arabicText = nextArabic;
       _title = nextTitle;
-      _transliteration = null;
+      _transliteration = nextPhonetic;
       _translation = nextTrans;
       _recordingState = RecordingState.idle;
       _elapsedSeconds = 0;
       _result = null;
-      _selectedWordDetail = null;
     });
 
     _fetchTransliterationForAyah(widget.surahNumber!, newNum);
@@ -327,8 +714,8 @@ class _PronunciationCheckerModalState
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body);
         final text = data['data']?['text'] as String?;
-        if (mounted && text != null && _verseNumber == ayah) {
-          setState(() => _transliteration = text);
+        if (mounted && text != null && text.isNotEmpty && _verseNumber == ayah) {
+          setState(() => _transliteration = text.trim());
         }
       }
     } catch (_) {}
@@ -341,6 +728,14 @@ class _PronunciationCheckerModalState
     if (audioState.isPlaying) {
       audioNotifier.pause();
       return;
+    }
+
+    // If currently reciting or paused on a mistake, pause microphone listening
+    // so reference recitation plays cleanly without speech recognizer interference
+    if (_recordingState == RecordingState.recording ||
+        _recordingState == RecordingState.pausedOnMistake) {
+      SpeechRecognitionService.instance.stopListening();
+      _silenceTimer?.cancel();
     }
 
     if (widget.dua != null) {
@@ -360,12 +755,180 @@ class _PronunciationCheckerModalState
     }
   }
 
+  /// Resolves the authentic phonetic pronunciation for any Arabic word
+  /// in English or Bengali, tailored to the active language mode.
+  String _getPronunciationForWord(
+    String? arabicWord,
+    bool isBengali, {
+    String? fallbackTransliteration,
+  }) {
+    if (arabicWord == null || arabicWord.trim().isEmpty) return '';
+
+    if (fallbackTransliteration != null && fallbackTransliteration.trim().isNotEmpty) {
+      if (isBengali) {
+        final bn = BengaliPhoneticHelper.toBengaliPronunciation(fallbackTransliteration);
+        if (bn.isNotEmpty) return bn;
+      }
+      return fallbackTransliteration;
+    }
+
+    final en = QuranTransliterationService.transliterateArabic(arabicWord);
+    if (isBengali) {
+      final bn = BengaliPhoneticHelper.toBengaliPronunciation(en);
+      return bn.isNotEmpty ? bn : en;
+    }
+    return en;
+  }
+
+  /// Synthesizes and articulates the given Arabic word via Neural/TTS.
+  Future<void> _playWordTts({
+    required String text,
+    required String buttonKey,
+  }) async {
+    final cleanText = text.replaceAll(RegExp(r'[0-9\(\)]'), '').trim();
+    if (cleanText.isEmpty) return;
+
+    if (_activeTtsKey == buttonKey) {
+      await _wordTtsPlayer?.stop();
+      if (mounted) {
+        setState(() {
+          _activeTtsKey = null;
+          _isWordTtsLoading = false;
+        });
+      }
+      return;
+    }
+
+    await _wordTtsPlayer?.stop();
+
+    // Pause global recitation audio if playing
+    final audioNotifier = ref.read(recitationAudioProvider.notifier);
+    final audioState = ref.read(recitationAudioProvider);
+    if (audioState.isPlaying) {
+      audioNotifier.pause();
+    }
+
+    // Temporarily pause speech recognition while word TTS is playing
+    if (_recordingState == RecordingState.recording ||
+        _recordingState == RecordingState.pausedOnMistake) {
+      SpeechRecognitionService.instance.stopListening();
+      _silenceTimer?.cancel();
+    }
+
+    if (mounted) {
+      setState(() {
+        _activeTtsKey = buttonKey;
+        _isWordTtsLoading = true;
+      });
+    }
+
+    try {
+      String? audioPath;
+      try {
+        audioPath = await NeuralTtsService.instance.getOrSynthesizeAudio(
+          text: cleanText,
+          langCode: 'ar',
+          gender: TtsVoiceGender.male,
+        );
+      } catch (_) {
+        audioPath = null;
+      }
+
+      if (!mounted) return;
+
+      if (audioPath != null && audioPath.isNotEmpty) {
+        await _wordTtsPlayer?.setFilePath(audioPath);
+      } else {
+        final encoded = Uri.encodeComponent(cleanText);
+        final fallbackUrl =
+            'https://translate.google.com/translate_tts?ie=UTF-8&q=$encoded&tl=ar&client=tw-ob';
+        await _wordTtsPlayer?.setUrl(fallbackUrl);
+      }
+
+      if (mounted) {
+        setState(() {
+          _isWordTtsLoading = false;
+        });
+      }
+
+      await _wordTtsPlayer?.play();
+    } catch (_) {
+      if (mounted) {
+        setState(() {
+          _activeTtsKey = null;
+          _isWordTtsLoading = false;
+        });
+      }
+    }
+  }
+
+  /// Compact interactive pill button to vocalize a word via TTS.
+  Widget _buildWordTtsPillButton({
+    required String textToSpeak,
+    required String buttonKey,
+    required bool isBengali,
+    required Color accentColor,
+  }) {
+    final isPlaying = _activeTtsKey == buttonKey && !_isWordTtsLoading;
+    final isLoading = _activeTtsKey == buttonKey && _isWordTtsLoading;
+
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        onTap: () => _playWordTts(text: textToSpeak, buttonKey: buttonKey),
+        borderRadius: BorderRadius.circular(16),
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+          decoration: BoxDecoration(
+            color: accentColor.withValues(alpha: isPlaying ? 0.3 : 0.12),
+            borderRadius: BorderRadius.circular(16),
+            border: Border.all(
+              color: accentColor.withValues(alpha: isPlaying ? 0.9 : 0.35),
+              width: 1,
+            ),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              if (isLoading)
+                SizedBox(
+                  width: 12,
+                  height: 12,
+                  child: CircularProgressIndicator(
+                    strokeWidth: 1.5,
+                    valueColor: AlwaysStoppedAnimation<Color>(accentColor),
+                  ),
+                )
+              else
+                Icon(
+                  isPlaying ? Icons.stop_rounded : Icons.volume_up_rounded,
+                  size: 13,
+                  color: accentColor,
+                ),
+              const SizedBox(width: 4),
+              Text(
+                isPlaying
+                    ? (isBengali ? 'থামুন' : 'Stop')
+                    : (isBengali ? 'উচ্চারণ' : 'Listen'),
+                style: TextStyle(
+                  fontSize: 10.5,
+                  fontWeight: FontWeight.bold,
+                  color: accentColor,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
   String _computeDisplayTitle() {
     if (!_isBangla) {
       return _title;
     }
     if (widget.surahNumber != null && _verseNumber != null) {
-      return '${quran.getSurahName(widget.surahNumber!)} • আয়াত $_verseNumber';
+      return '${quran.getSurahName(widget.surahNumber!)}: আয়াত $_verseNumber';
     }
     if (widget.dua != null) {
       return widget.dua!.title;
@@ -416,6 +979,14 @@ class _PronunciationCheckerModalState
                 ? BengaliPhoneticHelper.toBengaliPronunciation(widget.hadith!.transliteration!)
                 : null);
       }
+      if (widget.surahNumber != null && _verseNumber != null) {
+        return QuranTransliterationService.instance.getBengaliPronunciation(
+          widget.surahNumber!,
+          _verseNumber!,
+          transliteration: _transliteration,
+          arabicText: _arabicText,
+        );
+      }
       if (_transliteration != null && _transliteration!.isNotEmpty) {
         return BengaliPhoneticHelper.toBengaliPronunciation(_transliteration!);
       }
@@ -426,6 +997,16 @@ class _PronunciationCheckerModalState
       }
       if (widget.hadith != null) {
         return widget.hadith!.transliteration;
+      }
+      if (widget.surahNumber != null && _verseNumber != null) {
+        final t = (_transliteration != null && _transliteration!.isNotEmpty)
+            ? _transliteration!
+            : QuranTransliterationService.instance.getVerseTransliteration(
+                widget.surahNumber!,
+                _verseNumber!,
+                arabicText: _arabicText,
+              );
+        return t.isNotEmpty ? t : null;
       }
       return _transliteration;
     }
@@ -688,6 +1269,8 @@ class _PronunciationCheckerModalState
                       _buildIdleSection(isBengali),
                     if (_recordingState == RecordingState.recording)
                       _buildRecordingSection(isBengali),
+                    if (_recordingState == RecordingState.pausedOnMistake)
+                      _buildPausedOnMistakeSection(isBengali),
                     if (_recordingState == RecordingState.analyzing)
                       _buildAnalyzingSection(isBengali),
                     if (_recordingState == RecordingState.completed && _result != null)
@@ -744,9 +1327,12 @@ class _PronunciationCheckerModalState
                     ),
                     child: Text(
                       widget.surahNumber != null && _verseNumber != null
-                          ? (_isBangla
-                              ? 'আয়াত $_verseNumber / ${quran.getVerseCount(widget.surahNumber!)}'
-                              : 'Ayah $_verseNumber of ${quran.getVerseCount(widget.surahNumber!)}')
+                          ? (_recitationMode == RecitationMode.fullSurah &&
+                                  _recordingState == RecordingState.completed
+                              ? (_isBangla ? 'সম্পূর্ণ সূরা' : 'Complete Surah')
+                              : (_isBangla
+                                  ? 'আয়াত $_verseNumber / ${quran.getVerseCount(widget.surahNumber!)}'
+                                  : 'Ayah $_verseNumber of ${quran.getVerseCount(widget.surahNumber!)}'))
                           : (_isBangla ? 'উচ্চারণ অনুশীলন' : 'Recitation Practice'),
                       style: const TextStyle(
                         fontSize: 12,
@@ -819,6 +1405,41 @@ class _PronunciationCheckerModalState
             ],
           ),
 
+          // Mode Selector Capsule (Single Ayah vs Whole Surah)
+          if (widget.surahNumber != null) ...[
+            const SizedBox(height: 6),
+            Container(
+              padding: const EdgeInsets.all(2.5),
+              decoration: BoxDecoration(
+                color: Colors.white.withValues(alpha: 0.05),
+                borderRadius: BorderRadius.circular(20),
+                border: Border.all(color: Colors.white12),
+              ),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  _buildModePill(
+                    title: isBengali ? 'একক আয়াত' : 'Single Ayah',
+                    icon: Icons.article_rounded,
+                    isSelected: _recitationMode == RecitationMode.singleAyah,
+                    onTap: _recordingState == RecordingState.idle
+                        ? () => _switchMode(RecitationMode.singleAyah)
+                        : null,
+                  ),
+                  const SizedBox(width: 4),
+                  _buildModePill(
+                    title: isBengali ? 'পুরো সূরা' : 'Whole Surah',
+                    icon: Icons.auto_stories_rounded,
+                    isSelected: _recitationMode == RecitationMode.fullSurah,
+                    onTap: _recordingState == RecordingState.idle
+                        ? () => _switchMode(RecitationMode.fullSurah)
+                        : null,
+                  ),
+                ],
+              ),
+            ),
+          ],
+
           const SizedBox(height: 8),
 
           // Row 2: Instant Action Bar (Try Again, Master Reciter, Next Ayah, or Recording controls)
@@ -848,7 +1469,7 @@ class _PronunciationCheckerModalState
                 ),
                 const SizedBox(width: 8),
 
-                // Master Reciter Audio Button
+                // Listen Again Audio Button
                 Expanded(
                   flex: 3,
                   child: OutlinedButton.icon(
@@ -873,7 +1494,7 @@ class _PronunciationCheckerModalState
                     label: Text(
                       isAudioPlaying
                           ? (isBengali ? 'বিরতি' : 'Pause')
-                          : (isBengali ? 'শুনুন' : 'Master Reciter'),
+                          : (isBengali ? 'আবার শুনুন' : 'Listen Again'),
                       style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold),
                     ),
                   ),
@@ -917,23 +1538,107 @@ class _PronunciationCheckerModalState
                   ),
                 ),
                 const SizedBox(width: 8),
-                Text(
-                  '${isBengali ? 'রেকর্ডিং হচ্ছে' : 'Recording'}: ${(_elapsedSeconds ~/ 60).toString().padLeft(2, '0')}:${(_elapsedSeconds % 60).toString().padLeft(2, '0')}',
-                  style: const TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: Colors.white),
+                Expanded(
+                  child: Text(
+                    '${isBengali ? 'রেকর্ডিং' : 'Recording'}: ${(_elapsedSeconds ~/ 60).toString().padLeft(2, '0')}:${(_elapsedSeconds % 60).toString().padLeft(2, '0')}',
+                    style: const TextStyle(fontSize: 12.5, fontWeight: FontWeight.bold, color: Colors.white),
+                    overflow: TextOverflow.ellipsis,
+                  ),
                 ),
-                const Spacer(),
+                const SizedBox(width: 8),
+                // Listen Button while recording (pauses mic to hear authentic recitation)
+                OutlinedButton.icon(
+                  onPressed: _playAuthenticAudio,
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: isAudioPlaying ? NekiColors.goldLight : NekiColors.emeraldLight,
+                    side: BorderSide(
+                      color: isAudioPlaying ? NekiColors.goldLight : NekiColors.emeraldLight,
+                    ),
+                    backgroundColor: isAudioPlaying
+                        ? NekiColors.gold.withValues(alpha: 0.15)
+                        : Colors.white.withValues(alpha: 0.05),
+                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                  ),
+                  icon: Icon(isAudioPlaying ? Icons.pause_rounded : Icons.volume_up_rounded, size: 15),
+                  label: Text(
+                    isAudioPlaying
+                        ? (isBengali ? 'বিরতি' : 'Pause')
+                        : (isBengali ? 'শুনুন' : 'Listen'),
+                    style: const TextStyle(fontSize: 11.5, fontWeight: FontWeight.bold),
+                  ),
+                ),
+                const SizedBox(width: 8),
                 ElevatedButton.icon(
                   onPressed: _stopAndEvaluate,
                   style: ElevatedButton.styleFrom(
                     backgroundColor: Colors.redAccent,
                     foregroundColor: Colors.white,
-                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
                     shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
                   ),
                   icon: const Icon(Icons.stop_rounded, size: 16),
                   label: Text(
-                    isBengali ? 'সমাপ্ত করুন' : 'Finish & Evaluate',
-                    style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold),
+                    isBengali ? 'সমাপ্ত' : 'Finish',
+                    style: const TextStyle(fontSize: 11.5, fontWeight: FontWeight.bold),
+                  ),
+                ),
+              ],
+            ),
+          ] else if (_recordingState == RecordingState.pausedOnMistake) ...[
+            Row(
+              children: [
+                Container(
+                  width: 9,
+                  height: 9,
+                  decoration: const BoxDecoration(
+                    shape: BoxShape.circle,
+                    color: Colors.amberAccent,
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    isBengali ? 'ভুল: পুনরায় বলুন' : 'Mistake: Say Word',
+                    style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Colors.amberAccent),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+                // Listen Again button during mistake pause
+                OutlinedButton.icon(
+                  onPressed: _playAuthenticAudio,
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: isAudioPlaying ? NekiColors.goldLight : NekiColors.emeraldLight,
+                    side: BorderSide(
+                      color: isAudioPlaying ? NekiColors.goldLight : NekiColors.emeraldLight,
+                    ),
+                    backgroundColor: isAudioPlaying
+                        ? NekiColors.gold.withValues(alpha: 0.15)
+                        : Colors.white.withValues(alpha: 0.05),
+                    visualDensity: VisualDensity.compact,
+                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                  ),
+                  icon: Icon(isAudioPlaying ? Icons.pause_rounded : Icons.volume_up_rounded, size: 14),
+                  label: Text(
+                    isAudioPlaying
+                        ? (isBengali ? 'বিরতি' : 'Pause')
+                        : (isBengali ? 'আবার শুনুন' : 'Listen Again'),
+                    style: const TextStyle(fontSize: 11.5, fontWeight: FontWeight.bold),
+                  ),
+                ),
+                const SizedBox(width: 6),
+                TextButton.icon(
+                  onPressed: _skipActiveMistake,
+                  style: TextButton.styleFrom(
+                    visualDensity: VisualDensity.compact,
+                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                  ),
+                  icon: const Icon(Icons.skip_next_rounded, size: 16, color: Colors.white70),
+                  label: Text(
+                    isBengali ? 'এড়িয়ে যান' : 'Skip Word',
+                    style: const TextStyle(fontSize: 11.5, color: Colors.white70),
                   ),
                 ),
               ],
@@ -990,7 +1695,7 @@ class _PronunciationCheckerModalState
                     label: Text(
                       isAudioPlaying
                           ? (isBengali ? 'বিরতি' : 'Pause')
-                          : (isBengali ? 'তেলাওয়াত শুনুন' : 'Master Reciter'),
+                          : (isBengali ? 'শুনুন' : 'Listen'),
                       style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold),
                     ),
                   ),
@@ -1006,6 +1711,8 @@ class _PronunciationCheckerModalState
   Widget _buildScriptureCard(bool isBengali) {
     final displayTrans = _computeDisplayTranslation();
     final displayPhonetic = _computeDisplayTransliteration();
+    final isFullSurahFinished = _recitationMode == RecitationMode.fullSurah &&
+        _recordingState == RecordingState.completed;
 
     return Container(
       padding: const EdgeInsets.all(20),
@@ -1017,8 +1724,83 @@ class _PronunciationCheckerModalState
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          // Arabic Text in Calligraphy Font with colored words if completed
-          if (_recordingState == RecordingState.completed && _result != null) ...[
+          // Arabic Text in Calligraphy Font with live karaoke words during recording or colored words if completed
+          if ((_recordingState == RecordingState.recording ||
+                  _recordingState == RecordingState.pausedOnMistake) &&
+              _aligner != null &&
+              _alignerSnapshot != null) ...[
+            Directionality(
+              textDirection: TextDirection.rtl,
+              child: Wrap(
+                spacing: 6,
+                runSpacing: 8,
+                alignment: WrapAlignment.start,
+                crossAxisAlignment: WrapCrossAlignment.center,
+                children: List.generate(_aligner!.currentAyah.displayWords.length, (idx) {
+                  final word = _aligner!.currentAyah.displayWords[idx];
+                  final activeIdx = _alignerSnapshot!.activeWordIndex;
+                  final isPast = idx < activeIdx;
+                  final isActive = idx == activeIdx;
+                  final isPausedError = isActive && _recordingState == RecordingState.pausedOnMistake;
+
+                  Color wordColor;
+                  Color bgColor = Colors.transparent;
+                  Border? border;
+
+                  if (isPast) {
+                    final status = idx < _alignerSnapshot!.wordStatuses.length
+                        ? _alignerSnapshot!.wordStatuses[idx]
+                        : null;
+                    if (status == WordPronunciationStatus.perfect) {
+                      wordColor = const Color(0xFF81C784);
+                      bgColor = const Color(0xFF81C784).withValues(alpha: 0.15);
+                    } else if (status == WordPronunciationStatus.good) {
+                      wordColor = const Color(0xFFFFD54F);
+                      bgColor = const Color(0xFFFFD54F).withValues(alpha: 0.15);
+                    } else {
+                      wordColor = const Color(0xFFEF9A9A);
+                      bgColor = const Color(0xFFEF9A9A).withValues(alpha: 0.15);
+                    }
+                  } else if (isActive) {
+                    if (isPausedError) {
+                      wordColor = const Color(0xFFFF7043);
+                      bgColor = const Color(0xFFFF7043).withValues(alpha: 0.25);
+                      border = Border.all(color: const Color(0xFFFF7043), width: 2.0);
+                    } else {
+                      wordColor = const Color(0xFFFFD54F);
+                      bgColor = const Color(0xFFFFD54F).withValues(alpha: 0.18 + 0.15 * _pulseController.value);
+                      border = Border.all(
+                        color: const Color(0xFFFFD54F).withValues(alpha: 0.6 + 0.4 * _pulseController.value),
+                        width: 1.5,
+                      );
+                    }
+                  } else {
+                    wordColor = const Color(0xFFFFF9E6).withValues(alpha: 0.55);
+                  }
+
+                  return AnimatedContainer(
+                    duration: const Duration(milliseconds: 200),
+                    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                    decoration: BoxDecoration(
+                      color: bgColor,
+                      borderRadius: BorderRadius.circular(8),
+                      border: border,
+                    ),
+                    child: Text(
+                      word,
+                      style: GoogleFonts.amiri(
+                        fontSize: 26,
+                        height: 1.9,
+                        fontWeight: FontWeight.bold,
+                        color: wordColor,
+                        decoration: TextDecoration.none,
+                      ),
+                    ),
+                  );
+                }),
+              ),
+            ),
+          ] else if (_recordingState == RecordingState.completed && _result != null) ...[
             Directionality(
               textDirection: TextDirection.rtl,
               child: Wrap(
@@ -1039,20 +1821,16 @@ class _PronunciationCheckerModalState
                       wordColor = const Color(0xFFEF9A9A);
                       break;
                   }
-                  final isSelected = _selectedWordDetail == w;
-
                   return GestureDetector(
                     onTap: () {
-                      setState(() {
-                        _selectedWordDetail = isSelected ? null : w;
-                      });
+                      _showWordPronunciationDetailModal(context, w, isBengali);
                     },
                     child: Container(
                       padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
                       decoration: BoxDecoration(
-                        color: isSelected ? wordColor.withValues(alpha: 0.25) : Colors.transparent,
+                        color: wordColor.withValues(alpha: 0.15),
                         borderRadius: BorderRadius.circular(8),
-                        border: isSelected ? Border.all(color: wordColor, width: 1.5) : null,
+                        border: Border.all(color: wordColor.withValues(alpha: 0.5), width: 1.0),
                       ),
                       child: Text(
                         w.arabicWord,
@@ -1083,8 +1861,7 @@ class _PronunciationCheckerModalState
               textDirection: TextDirection.rtl,
             ),
           ],
-
-          if (displayPhonetic != null && displayPhonetic.isNotEmpty) ...[
+          if (!isFullSurahFinished && displayPhonetic != null && displayPhonetic.isNotEmpty) ...[
             const SizedBox(height: 12),
             const Divider(color: Colors.white10, height: 1),
             const SizedBox(height: 10),
@@ -1101,7 +1878,7 @@ class _PronunciationCheckerModalState
             ),
           ],
 
-          if (displayTrans != null && displayTrans.isNotEmpty) ...[
+          if (!isFullSurahFinished && displayTrans != null && displayTrans.isNotEmpty) ...[
             const SizedBox(height: 8),
             Text(
               displayTrans,
@@ -1110,6 +1887,35 @@ class _PronunciationCheckerModalState
                 color: Colors.white.withValues(alpha: 0.7),
                 height: 1.4,
                 decoration: TextDecoration.none,
+              ),
+            ),
+          ],
+
+          if (!isFullSurahFinished &&
+              _recitationMode == RecitationMode.fullSurah &&
+              widget.surahNumber != null) ...[
+            const SizedBox(height: 12),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+              decoration: BoxDecoration(
+                color: Colors.white.withValues(alpha: 0.04),
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(color: Colors.white10),
+              ),
+              child: Row(
+                children: [
+                  const Icon(Icons.auto_stories_rounded, size: 14, color: NekiColors.emeraldLight),
+                  const SizedBox(width: 8),
+                  Text(
+                    '${isBengali ? 'সূরা অগ্রগতি' : 'Surah Progress'}: ${_currentSurahAyahIndex + 1} / ${quran.getVerseCount(widget.surahNumber!)}',
+                    style: const TextStyle(fontSize: 11.5, color: Colors.white70, fontWeight: FontWeight.w600),
+                  ),
+                  const Spacer(),
+                  Text(
+                    '${(((_alignerSnapshot?.overallSurahProgress ?? 0.0) * 100).toInt())}%',
+                    style: const TextStyle(fontSize: 11.5, color: NekiColors.emeraldLight, fontWeight: FontWeight.bold),
+                  ),
+                ],
               ),
             ),
           ],
@@ -1358,7 +2164,39 @@ class _PronunciationCheckerModalState
           ),
         ],
 
-        const SizedBox(height: 24),
+        const SizedBox(height: 16),
+
+        // Auto-stop indicator hint
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+          decoration: BoxDecoration(
+            color: NekiColors.emeraldPrimary.withValues(alpha: 0.12),
+            borderRadius: BorderRadius.circular(20),
+            border: Border.all(color: NekiColors.emeraldLight.withValues(alpha: 0.3)),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Icon(Icons.auto_awesome_rounded, size: 14, color: NekiColors.emeraldLight),
+              const SizedBox(width: 6),
+              Flexible(
+                child: Text(
+                  isBengali
+                      ? 'তিলাওয়াত শেষ হলে স্বয়ংক্রিয়ভাবে সমাপ্ত হবে'
+                      : 'Auto-stops when recitation is complete',
+                  style: const TextStyle(
+                    fontSize: 11.5,
+                    fontWeight: FontWeight.w600,
+                    color: NekiColors.emeraldLight,
+                  ),
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+            ],
+          ),
+        ),
+
+        const SizedBox(height: 20),
         ElevatedButton.icon(
           onPressed: _stopAndEvaluate,
           style: ElevatedButton.styleFrom(
@@ -1374,6 +2212,428 @@ class _PronunciationCheckerModalState
           ),
         ),
       ],
+    );
+  }
+
+  Widget _buildPausedOnMistakeSection(bool isBengali) {
+    final audioState = ref.watch(recitationAudioProvider);
+    final isAudioPlaying = audioState.isPlaying;
+    final mistake = _activeMistake;
+    final expectedWord = mistake?.arabicWord ??
+        (_aligner != null &&
+                _aligner!.activeWordIndex <
+                    _aligner!.currentAyah.displayWords.length
+            ? _aligner!.currentAyah.displayWords[_aligner!.activeWordIndex]
+            : '');
+    final spokenWord = mistake?.spokenWord;
+    final issueDesc = mistake?.issueDescription ??
+        (isBengali
+            ? 'উচ্চারণে গরমিল শনাক্ত হয়েছে।'
+            : 'Pronunciation divergence detected.');
+    final makhrajTip = mistake?.makhrajTip ??
+        mistake?.correctionAction ??
+        (isBengali
+            ? 'হরফের সঠিক মাখরাজ থেকে ধীরে ধীরে পাঠ করুন।'
+            : 'Articulate cleanly from the letter Makhraj.');
+
+    final expectedPronunciation = _getPronunciationForWord(
+      expectedWord,
+      isBengali,
+      fallbackTransliteration: mistake?.transliteration,
+    );
+    final spokenPronunciation = spokenWord != null && spokenWord.isNotEmpty
+        ? _getPronunciationForWord(spokenWord, isBengali)
+        : (isBengali ? '(অনুপস্থিত)' : '(Omitted)');
+
+    return Container(
+      margin: const EdgeInsets.symmetric(vertical: 8),
+      padding: const EdgeInsets.all(18),
+      decoration: BoxDecoration(
+        color: const Color(0xFF1E1408),
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(
+          color: Colors.amberAccent.withValues(alpha: 0.6),
+          width: 1.5,
+        ),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.amber.withValues(alpha: 0.15),
+            blurRadius: 16,
+            spreadRadius: 2,
+          ),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          // Header Badge
+          Row(
+            children: [
+              Container(
+                padding: const EdgeInsets.all(6),
+                decoration: BoxDecoration(
+                  color: Colors.amber.withValues(alpha: 0.2),
+                  shape: BoxShape.circle,
+                ),
+                child: const Icon(
+                  Icons.pause_circle_filled_rounded,
+                  color: Colors.amberAccent,
+                  size: 22,
+                ),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      isBengali
+                          ? 'তিলাওয়াত স্থগিত: সংশোধন প্রয়োজন'
+                          : 'Recitation Paused: Practice Word',
+                      style: const TextStyle(
+                        fontSize: 13.5,
+                        fontWeight: FontWeight.bold,
+                        color: Colors.amberAccent,
+                      ),
+                    ),
+                    Text(
+                      isBengali
+                          ? 'সঠিকভাবে উচ্চারণ করুন, স্বয়ংক্রিয়ভাবে পুনরায় শুরু হবে'
+                          : 'Say the word accurately to resume recitation automatically',
+                      style: TextStyle(
+                        fontSize: 11,
+                        color: Colors.white.withValues(alpha: 0.7),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+
+          const SizedBox(height: 14),
+
+          // Word comparison row: What Was Heard vs Expected Word
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+            decoration: BoxDecoration(
+              color: Colors.black.withValues(alpha: 0.35),
+              borderRadius: BorderRadius.circular(14),
+              border: Border.all(color: Colors.white12),
+            ),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                // What was heard
+                Expanded(
+                  child: Column(
+                    children: [
+                      Text(
+                        isBengali ? 'যা শোনা গেছে' : 'What Was Heard',
+                        style: const TextStyle(
+                          fontSize: 11,
+                          fontWeight: FontWeight.w600,
+                          color: Color(0xFFEF9A9A),
+                        ),
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        spokenWord ?? (isBengali ? 'বাদ পড়েছে' : 'Skipped'),
+                        style: GoogleFonts.amiri(
+                          fontSize: 22,
+                          fontWeight: FontWeight.bold,
+                          color: const Color(0xFFEF9A9A),
+                        ),
+                        textAlign: TextAlign.center,
+                        textDirection: TextDirection.rtl,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                      const SizedBox(height: 3),
+                      Text(
+                        spokenPronunciation,
+                        style: TextStyle(
+                          fontSize: 12,
+                          fontWeight: FontWeight.w500,
+                          fontStyle: isBengali ? FontStyle.normal : FontStyle.italic,
+                          color: const Color(0xFFFFD54F),
+                        ),
+                        textAlign: TextAlign.center,
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                      const SizedBox(height: 8),
+                      if (spokenWord != null && spokenWord.isNotEmpty)
+                        _buildWordTtsPillButton(
+                          textToSpeak: spokenWord,
+                          buttonKey: 'live_spoken',
+                          isBengali: isBengali,
+                          accentColor: const Color(0xFFEF9A9A),
+                        ),
+                    ],
+                  ),
+                ),
+                Container(
+                  width: 1,
+                  height: 100,
+                  margin: const EdgeInsets.symmetric(horizontal: 6),
+                  color: Colors.white12,
+                ),
+                // Expected word (what it should have been)
+                Expanded(
+                  child: Column(
+                    children: [
+                      Text(
+                        isBengali ? 'প্রত্যাশিত শব্দ' : 'Expected Word',
+                        style: const TextStyle(
+                          fontSize: 11,
+                          fontWeight: FontWeight.w600,
+                          color: Color(0xFF81C784),
+                        ),
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        expectedWord,
+                        style: GoogleFonts.amiri(
+                          fontSize: 22,
+                          fontWeight: FontWeight.bold,
+                          color: const Color(0xFF81C784),
+                        ),
+                        textAlign: TextAlign.center,
+                        textDirection: TextDirection.rtl,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                      const SizedBox(height: 3),
+                      Text(
+                        expectedPronunciation,
+                        style: TextStyle(
+                          fontSize: 12,
+                          fontWeight: FontWeight.w500,
+                          fontStyle: isBengali ? FontStyle.normal : FontStyle.italic,
+                          color: const Color(0xFF81C784),
+                        ),
+                        textAlign: TextAlign.center,
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                      const SizedBox(height: 8),
+                      if (expectedWord.isNotEmpty)
+                        _buildWordTtsPillButton(
+                          textToSpeak: expectedWord,
+                          buttonKey: 'live_expected',
+                          isBengali: isBengali,
+                          accentColor: const Color(0xFF81C784),
+                        ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+
+          const SizedBox(height: 14),
+
+          // Makhraj & Diagnostic Advice
+          Container(
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              color: Colors.amber.withValues(alpha: 0.08),
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: Colors.amber.withValues(alpha: 0.2)),
+            ),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Icon(
+                  Icons.lightbulb_outline_rounded,
+                  color: Colors.amberAccent,
+                  size: 18,
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        issueDesc,
+                        style: const TextStyle(
+                          fontSize: 12,
+                          fontWeight: FontWeight.w600,
+                          color: Colors.white,
+                        ),
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        makhrajTip,
+                        style: TextStyle(
+                          fontSize: 11.5,
+                          color: Colors.white.withValues(alpha: 0.8),
+                          height: 1.3,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+
+          const SizedBox(height: 16),
+
+          // Live Listening Pulse Pill (Full width, centered)
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+            decoration: BoxDecoration(
+              color: Colors.white.withValues(alpha: 0.06),
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(
+                color: Colors.amberAccent.withValues(alpha: 0.3),
+              ),
+            ),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                AnimatedBuilder(
+                  animation: _pulseController,
+                  builder: (context, _) => Container(
+                    width: 8,
+                    height: 8,
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      color: Colors.amberAccent.withValues(
+                        alpha: 0.4 + 0.6 * _pulseController.value,
+                      ),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Flexible(
+                  child: Text(
+                    isBengali
+                        ? 'পুনরায় বলার অপেক্ষায়...'
+                        : 'Listening for correction...',
+                    style: const TextStyle(
+                      fontSize: 11.5,
+                      color: Colors.amberAccent,
+                      fontWeight: FontWeight.bold,
+                    ),
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+              ],
+            ),
+          ),
+
+          const SizedBox(height: 10),
+
+          // Action buttons: Listen Again & Skip Word
+          Row(
+            children: [
+              // Listen Again Audio Button inside Mistake Card
+              Expanded(
+                child: OutlinedButton.icon(
+                  onPressed: _playAuthenticAudio,
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: isAudioPlaying ? NekiColors.goldLight : NekiColors.emeraldLight,
+                    side: BorderSide(
+                      color: isAudioPlaying ? NekiColors.goldLight : NekiColors.emeraldLight,
+                    ),
+                    backgroundColor: isAudioPlaying
+                        ? NekiColors.gold.withValues(alpha: 0.15)
+                        : Colors.white.withValues(alpha: 0.05),
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 8,
+                      vertical: 8,
+                    ),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                  ),
+                  icon: Icon(
+                    isAudioPlaying ? Icons.pause_rounded : Icons.volume_up_rounded,
+                    size: 15,
+                  ),
+                  label: Text(
+                    isAudioPlaying
+                        ? (isBengali ? 'বিরতি' : 'Pause')
+                        : (isBengali ? 'আবার শুনুন' : 'Listen Again'),
+                    style: const TextStyle(fontSize: 11.5, fontWeight: FontWeight.bold),
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+              ),
+
+              const SizedBox(width: 8),
+
+              // Skip Word Button
+              Expanded(
+                child: OutlinedButton.icon(
+                  onPressed: _skipActiveMistake,
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: Colors.white70,
+                    side: const BorderSide(color: Colors.white24),
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 8,
+                      vertical: 8,
+                    ),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                  ),
+                  icon: const Icon(Icons.skip_next_rounded, size: 16),
+                  label: Text(
+                    isBengali ? 'এড়িয়ে যান' : 'Skip',
+                    style: const TextStyle(fontSize: 11.5),
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildModePill({
+    required String title,
+    required IconData icon,
+    required bool isSelected,
+    required VoidCallback? onTap,
+  }) {
+    return GestureDetector(
+      onTap: onTap,
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 200),
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+        decoration: BoxDecoration(
+          color: isSelected
+              ? NekiColors.emeraldPrimary.withValues(alpha: 0.85)
+              : Colors.transparent,
+          borderRadius: BorderRadius.circular(16),
+          border: isSelected
+              ? Border.all(color: NekiColors.emeraldLight, width: 1.2)
+              : null,
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(
+              icon,
+              size: 14,
+              color: isSelected ? Colors.white : Colors.white60,
+            ),
+            const SizedBox(width: 5),
+            Text(
+              title,
+              style: TextStyle(
+                fontSize: 11.5,
+                fontWeight: isSelected ? FontWeight.bold : FontWeight.w500,
+                color: isSelected ? Colors.white : Colors.white70,
+              ),
+            ),
+          ],
+        ),
+      ),
     );
   }
 
@@ -1415,6 +2675,8 @@ class _PronunciationCheckerModalState
 
   Widget _buildResultsSection(PronunciationResult result, bool isBengali) {
     final isHighScore = result.overallScore >= 85;
+    final englishPhonetics = QuranTransliterationService.transliterateArabic(result.spokenText);
+    final bengaliPhonetics = BengaliPhoneticHelper.toBengaliPronunciation(englishPhonetics);
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -1471,7 +2733,17 @@ class _PronunciationCheckerModalState
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         Text(
-                          result.qualityTitle,
+                          isBengali
+                              ? (result.overallScore >= 90
+                                  ? 'মুমতাজ! (অসাধারণ তিলাওয়াত)'
+                                  : result.overallScore >= 80
+                                      ? 'জাইয়্যিদ জিদ্দান! (চমৎকার তিলাওয়াত)'
+                                      : result.overallScore >= 70
+                                          ? 'জাইয়্যিদ (ভালো তিলাওয়াত)'
+                                          : result.overallScore >= 50
+                                              ? 'মাকবুল (গ্রহণযোগ্য)'
+                                              : 'অনুশীলন প্রয়োজন')
+                              : result.qualityTitle.replaceAll('Mumtāz', 'Mumtaz'),
                           style: TextStyle(
                             fontSize: 16,
                             fontWeight: FontWeight.bold,
@@ -1481,7 +2753,15 @@ class _PronunciationCheckerModalState
                         ),
                         const SizedBox(height: 4),
                         Text(
-                          result.feedbackSummary,
+                          isBengali
+                              ? (result.overallScore >= 90
+                                  ? 'মাশাআল্লাহ! অত্যন্ত নিখুঁত উচ্চারণ ও ছন্দময় সুন্দর তিলাওয়াত।'
+                                  : result.overallScore >= 80
+                                      ? 'উচ্চারণ বেশ স্পষ্ট এবং চমৎকার। চিহ্নিত শব্দগুলো আরেকবার দেখে নিন।'
+                                      : result.overallScore >= 65
+                                          ? 'ভালো প্রচেষ্টা! ভারী হরফ ও মাখরাজে আরেকটু মনোযোগ দিন।'
+                                          : 'প্রতিটি প্রচেষ্টা সওয়াবপূর্ণ! লাল চিহ্নিত শব্দগুলোতে ট্যাপ করে নির্দেশিকা দেখুন।')
+                              : result.feedbackSummary,
                           style: TextStyle(
                             fontSize: 12,
                             color: Colors.white.withValues(alpha: 0.8),
@@ -1515,11 +2795,14 @@ class _PronunciationCheckerModalState
                         color: result.isOfflineFallback ? NekiColors.goldLight : NekiColors.emeraldLight,
                       ),
                       const SizedBox(width: 6),
-                      Text(
-                        result.isOfflineFallback
-                            ? (isBengali ? 'অন-ডিভাইস স্পিচ ইঞ্জিন (অফলাইন)' : 'On-Device Speech Engine (Offline)')
-                            : 'Groq Whisper Large-v3 (Wispr Flow Accuracy)',
-                        style: const TextStyle(fontSize: 11, color: Colors.white70),
+                      Flexible(
+                        child: Text(
+                          result.isOfflineFallback
+                              ? (isBengali ? 'অন-ডিভাইস স্পিচ ইঞ্জিন (অফলাইন)' : 'On-Device Speech Engine (Offline)')
+                              : 'Groq Whisper Large-v3 (Wispr Flow Accuracy)',
+                          style: const TextStyle(fontSize: 11, color: Colors.white70),
+                          overflow: TextOverflow.ellipsis,
+                        ),
                       ),
                     ],
                   ),
@@ -1529,173 +2812,138 @@ class _PronunciationCheckerModalState
           ),
         ),
 
-        // Recognized Text Comparison Card
+        // Recognized Text Comparison Card ("What was heard from your voice")
         if (result.spokenText.isNotEmpty) ...[
           const SizedBox(height: 14),
           Container(
-            padding: const EdgeInsets.all(14),
+            padding: const EdgeInsets.all(16),
             decoration: BoxDecoration(
-              color: Colors.white.withValues(alpha: 0.03),
-              borderRadius: BorderRadius.circular(14),
-              border: Border.all(color: Colors.white10),
+              color: Colors.white.withValues(alpha: 0.04),
+              borderRadius: BorderRadius.circular(16),
+              border: Border.all(color: NekiColors.goldLight.withValues(alpha: 0.3)),
             ),
             child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  isBengali ? 'আপনার কণ্ঠে যা শোনা গেছে:' : 'What was heard from your voice:',
-                  style: const TextStyle(fontSize: 11.5, color: Colors.white60),
-                ),
-                const SizedBox(height: 4),
-                Text(
-                  result.spokenText,
-                  style: GoogleFonts.amiri(
-                    fontSize: 16,
-                    color: const Color(0xFFFFF9E6),
-                  ),
-                  textDirection: TextDirection.rtl,
-                ),
-              ],
-            ),
-          ),
-        ],
-
-        const SizedBox(height: 18),
-
-        // DEDICATED MISTAKES & HOW TO FIX SECTION
-        _buildMistakesAndCorrectionsSection(result, isBengali),
-
-        const SizedBox(height: 18),
-
-        // Word-by-word colored breakdown
-        Text(
-          isBengali
-              ? 'প্রতিটি শব্দের উচ্চারণ বিশ্লেষণ (পরামর্শের জন্য চাপুন)'
-              : 'Word-by-Word Pronunciation Feedback (Tap for Tips)',
-          style: const TextStyle(
-            fontSize: 14,
-            fontWeight: FontWeight.bold,
-            color: Colors.white,
-            decoration: TextDecoration.none,
-          ),
-        ),
-        const SizedBox(height: 8),
-        Wrap(
-          spacing: 8,
-          runSpacing: 8,
-          direction: Axis.horizontal,
-          children: result.words.map((w) {
-            Color pillColor;
-            Color textColor;
-            IconData icon;
-
-            switch (w.status) {
-              case WordPronunciationStatus.perfect:
-                pillColor = const Color(0xFF2E7D52).withValues(alpha: 0.25);
-                textColor = const Color(0xFF81C784);
-                icon = Icons.check_circle_rounded;
-                break;
-              case WordPronunciationStatus.good:
-                pillColor = const Color(0xFFFFB300).withValues(alpha: 0.22);
-                textColor = const Color(0xFFFFD54F);
-                icon = Icons.info_rounded;
-                break;
-              case WordPronunciationStatus.needsPractice:
-                pillColor = const Color(0xFFE53935).withValues(alpha: 0.22);
-                textColor = const Color(0xFFEF9A9A);
-                icon = Icons.priority_high_rounded;
-                break;
-            }
-
-            final isSelected = _selectedWordDetail == w;
-
-            return GestureDetector(
-              onTap: () {
-                setState(() {
-                  _selectedWordDetail = isSelected ? null : w;
-                });
-              },
-              child: AnimatedContainer(
-                duration: const Duration(milliseconds: 200),
-                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                decoration: BoxDecoration(
-                  color: isSelected ? textColor.withValues(alpha: 0.25) : pillColor,
-                  borderRadius: BorderRadius.circular(12),
-                  border: Border.all(
-                    color: textColor.withValues(alpha: isSelected ? 0.9 : 0.4),
-                    width: isSelected ? 2.0 : 1.0,
-                  ),
-                ),
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Icon(icon, size: 14, color: textColor),
-                    const SizedBox(width: 6),
-                    Text(
-                      w.arabicWord,
-                      style: GoogleFonts.amiri(
-                        fontSize: 16,
-                        fontWeight: FontWeight.bold,
-                        color: textColor,
-                        decoration: TextDecoration.none,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            );
-          }).toList(),
-        ),
-
-        // Selected Word Feedback Detail Card
-        if (_selectedWordDetail != null) ...[
-          const SizedBox(height: 12),
-          Container(
-            padding: const EdgeInsets.all(14),
-            decoration: BoxDecoration(
-              color: const Color(0xFF142B20),
-              borderRadius: BorderRadius.circular(14),
-              border: Border.all(color: NekiColors.goldLight.withValues(alpha: 0.5)),
-            ),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
                 Row(
                   children: [
-                    Text(
-                      _selectedWordDetail!.arabicWord,
-                      style: GoogleFonts.amiri(
-                        fontSize: 20,
-                        fontWeight: FontWeight.bold,
-                        color: NekiColors.goldLight,
+                    const Icon(
+                      Icons.record_voice_over_rounded,
+                      size: 16,
+                      color: NekiColors.goldLight,
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        isBengali ? 'আপনার কণ্ঠে যা শোনা গেছে:' : 'What was heard from your voice:',
+                        style: const TextStyle(
+                          fontSize: 13,
+                          fontWeight: FontWeight.bold,
+                          color: NekiColors.goldLight,
+                        ),
                       ),
                     ),
-                    const SizedBox(width: 10),
-                    if (_selectedWordDetail!.spokenWord != null)
-                      Text(
-                        '(${isBengali ? 'শোনা গেছে' : 'Heard'}: ${_selectedWordDetail!.spokenWord})',
-                        style: const TextStyle(fontSize: 12, color: Colors.white70),
-                      ),
-                    const Spacer(),
-                    IconButton(
-                      icon: const Icon(Icons.close_rounded, size: 18, color: Colors.white60),
-                      padding: EdgeInsets.zero,
-                      constraints: const BoxConstraints(),
-                      onPressed: () => setState(() => _selectedWordDetail = null),
+                    _buildWordTtsPillButton(
+                      textToSpeak: result.spokenText,
+                      buttonKey: 'results_spoken_all',
+                      isBengali: isBengali,
+                      accentColor: NekiColors.goldLight,
                     ),
                   ],
                 ),
-                const SizedBox(height: 6),
+                const SizedBox(height: 10),
+                // Prominent Arabic Recognized Text
                 Text(
-                  _selectedWordDetail!.correctionAction ??
-                      _selectedWordDetail!.makhrajTip ??
-                      (isBengali ? 'স্পষ্ট ও নির্ভুলভাবে উচ্চারিত।' : 'Pronounced clearly.'),
-                  style: const TextStyle(fontSize: 12.5, color: Colors.white, height: 1.3),
+                  result.spokenText,
+                  style: GoogleFonts.amiri(
+                    fontSize: 24,
+                    height: 1.8,
+                    fontWeight: FontWeight.bold,
+                    color: const Color(0xFFFFF9E6),
+                  ),
+                  textAlign: TextAlign.right,
+                  textDirection: TextDirection.rtl,
                 ),
+                const SizedBox(height: 8),
+                const Divider(color: Colors.white12, height: 1),
+                const SizedBox(height: 8),
+                // Pronunciation representation for learners (single active language mode)
+                if (isBengali && bengaliPhonetics.isNotEmpty) ...[
+                  Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                        decoration: BoxDecoration(
+                          color: NekiColors.emeraldPrimary.withValues(alpha: 0.25),
+                          borderRadius: BorderRadius.circular(6),
+                        ),
+                        child: const Text(
+                          'উচ্চারণ',
+                          style: TextStyle(
+                            fontSize: 11,
+                            fontWeight: FontWeight.bold,
+                            color: NekiColors.emeraldLight,
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          bengaliPhonetics,
+                          style: const TextStyle(
+                            fontSize: 13.5,
+                            fontWeight: FontWeight.w600,
+                            color: Color(0xFFFFD54F),
+                            height: 1.35,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ] else if (!isBengali && englishPhonetics.isNotEmpty) ...[
+                  Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                        decoration: BoxDecoration(
+                          color: Colors.white.withValues(alpha: 0.08),
+                          borderRadius: BorderRadius.circular(6),
+                        ),
+                        child: const Text(
+                          'Phonetic',
+                          style: TextStyle(
+                            fontSize: 11,
+                            fontWeight: FontWeight.bold,
+                            color: Colors.white70,
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          englishPhonetics,
+                          style: const TextStyle(
+                            fontSize: 13.5,
+                            fontStyle: FontStyle.italic,
+                            color: Color(0xFF81C784),
+                            height: 1.35,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
               ],
             ),
           ),
         ],
+
+        const SizedBox(height: 18),
+
+        // MERGED: WHERE YOU WENT WRONG & HOW TO FIX IT (with small ℹ️ icon for trilingual popup guidance)
+        _buildMistakesAndCorrectionsSection(result, isBengali),
 
         const SizedBox(height: 18),
 
@@ -1782,7 +3030,9 @@ class _PronunciationCheckerModalState
             borderRadius: BorderRadius.circular(12),
           ),
           child: Text(
-            result.encouragement,
+            isBengali
+                ? (result.encouragementBn ?? 'রাসূলুল্লাহ (সা.) বলেছেন: "তোমাদের মধ্যে সর্বোত্তম সেই ব্যক্তি, যে নিজে কুরআন শিখে এবং অন্যকে শিক্ষা দেয়।" (সহীহ বুখারী)')
+                : result.encouragement.replaceAll('ﷺ', '(pbuh)'),
             style: TextStyle(
               fontSize: 11,
               fontStyle: FontStyle.italic,
@@ -1849,12 +3099,14 @@ class _PronunciationCheckerModalState
           children: [
             const Icon(Icons.lightbulb_rounded, size: 18, color: NekiColors.goldLight),
             const SizedBox(width: 8),
-            Text(
-              isBengali ? 'ভুল উচ্চারণ ও সংশোধনের উপায়' : 'Where You Went Wrong & How to Fix',
-              style: const TextStyle(
-                fontSize: 14,
-                fontWeight: FontWeight.bold,
-                color: NekiColors.goldLight,
+            Expanded(
+              child: Text(
+                isBengali ? 'ভুল উচ্চারণ ও সংশোধনের উপায়' : 'Where You Went Wrong & How to Fix',
+                style: const TextStyle(
+                  fontSize: 14,
+                  fontWeight: FontWeight.bold,
+                  color: NekiColors.goldLight,
+                ),
               ),
             ),
           ],
@@ -1874,165 +3126,669 @@ class _PronunciationCheckerModalState
           final isNeedsPractice = w.status == WordPronunciationStatus.needsPractice;
           final accentColor = isNeedsPractice ? Colors.redAccent : const Color(0xFFFFB300);
 
-          return Container(
-            margin: const EdgeInsets.only(bottom: 12),
-            padding: const EdgeInsets.all(14),
-            decoration: BoxDecoration(
-              color: Colors.white.withValues(alpha: 0.04),
-              borderRadius: BorderRadius.circular(16),
-              border: Border.all(
-                color: accentColor.withValues(alpha: 0.45),
-                width: 1.2,
-              ),
-            ),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                // Top row: Authentic Word vs What was heard + Status Pill
-                Row(
-                  crossAxisAlignment: CrossAxisAlignment.center,
-                  children: [
-                    // Authentic Scripture Word
-                    Text(
-                      w.arabicWord,
-                      style: GoogleFonts.amiri(
-                        fontSize: 22,
-                        fontWeight: FontWeight.bold,
-                        color: const Color(0xFFFFF9E6),
-                      ),
-                      textDirection: TextDirection.rtl,
-                    ),
-                    const SizedBox(width: 10),
-                    // Phonetic transliteration and heard preview
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          if (w.transliteration.isNotEmpty)
-                            Text(
-                              isBengali
-                                  ? BengaliPhoneticHelper.toBengaliPronunciation(w.transliteration)
-                                  : w.transliteration,
-                              style: TextStyle(
-                                fontSize: 12,
-                                fontStyle: FontStyle.italic,
-                                color: NekiColors.goldLight.withValues(alpha: 0.85),
-                              ),
-                            ),
-                          if (w.spokenWord != null && w.spokenWord!.isNotEmpty)
-                            Text(
-                              isBengali ? 'শোনা গেছে: ${w.spokenWord}' : 'Heard: ${w.spokenWord}',
-                              style: const TextStyle(
-                                fontSize: 11.5,
-                                color: Colors.white60,
-                              ),
-                            ),
-                        ],
-                      ),
-                    ),
-                    // Status tag pill
-                    Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                      decoration: BoxDecoration(
-                        color: accentColor.withValues(alpha: 0.2),
-                        borderRadius: BorderRadius.circular(8),
-                      ),
-                      child: Text(
-                        isNeedsPractice
-                            ? (isBengali ? 'অনুশীলন প্রয়োজন' : 'Needs Practice')
-                            : (isBengali ? 'উন্নতি সম্ভব' : 'Good Attempt'),
-                        style: TextStyle(
-                          fontSize: 10.5,
-                          fontWeight: FontWeight.bold,
-                          color: isNeedsPractice
-                              ? const Color(0xFFEF9A9A)
-                              : const Color(0xFFFFD54F),
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
+          final issueText = (isBengali && w.issueDescriptionBn != null && w.issueDescriptionBn!.isNotEmpty)
+              ? w.issueDescriptionBn!
+              : (w.issueDescription ?? '');
 
-                // Issue Description / What went wrong
-                if (w.issueDescription != null && w.issueDescription!.isNotEmpty) ...[
-                  const SizedBox(height: 10),
-                  Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                    decoration: BoxDecoration(
-                      color: Colors.redAccent.withValues(alpha: 0.12),
-                      borderRadius: BorderRadius.circular(8),
-                    ),
-                    child: Row(
-                      crossAxisAlignment: CrossAxisAlignment.start,
+          final actionText = (isBengali && w.correctionActionBn != null && w.correctionActionBn!.isNotEmpty)
+              ? w.correctionActionBn!
+              : (w.correctionAction ?? '');
+
+          final expectedPronunciation = _getPronunciationForWord(
+            w.arabicWord,
+            isBengali,
+            fallbackTransliteration: w.transliteration,
+          );
+
+          final hasSpokenWord = w.spokenWord != null && w.spokenWord!.trim().isNotEmpty;
+          final spokenPronunciation = hasSpokenWord
+              ? _getPronunciationForWord(w.spokenWord!, isBengali)
+              : (isBengali ? '(অনুপস্থিত)' : '(Omitted)');
+
+          final mistakeId = '${w.arabicWord}_${w.spokenWord ?? "none"}';
+
+          return Material(
+            color: Colors.transparent,
+            child: InkWell(
+              onTap: () => _showWordPronunciationDetailModal(context, w, isBengali),
+              borderRadius: BorderRadius.circular(16),
+              child: Container(
+                margin: const EdgeInsets.only(bottom: 12),
+                padding: const EdgeInsets.all(14),
+                decoration: BoxDecoration(
+                  color: Colors.white.withValues(alpha: 0.04),
+                  borderRadius: BorderRadius.circular(16),
+                  border: Border.all(
+                    color: accentColor.withValues(alpha: 0.45),
+                    width: 1.2,
+                  ),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    // Top row: Status Tag Pill + Info Guidance Button
+                    Row(
                       children: [
-                        const Icon(Icons.error_outline_rounded, size: 15, color: Colors.redAccent),
-                        const SizedBox(width: 6),
-                        Expanded(
+                        Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                          decoration: BoxDecoration(
+                            color: accentColor.withValues(alpha: 0.2),
+                            borderRadius: BorderRadius.circular(8),
+                          ),
                           child: Text(
-                            w.issueDescription!,
-                            style: const TextStyle(
-                              fontSize: 12,
-                              fontWeight: FontWeight.w600,
-                              color: Color(0xFFFFCDD2),
+                            isNeedsPractice
+                                ? (isBengali ? 'অনুশীলন প্রয়োজন' : 'Needs Practice')
+                                : (isBengali ? 'উন্নতি সম্ভব' : 'Good Attempt'),
+                            style: TextStyle(
+                              fontSize: 10.5,
+                              fontWeight: FontWeight.bold,
+                              color: isNeedsPractice
+                                  ? const Color(0xFFEF9A9A)
+                                  : const Color(0xFFFFD54F),
                             ),
                           ),
                         ),
+                        const Spacer(),
+                        // Small Info Icon button for full popup guidance
+                        IconButton(
+                          icon: const Icon(
+                            Icons.info_outline_rounded,
+                            size: 19,
+                            color: NekiColors.goldLight,
+                          ),
+                          padding: EdgeInsets.zero,
+                          constraints: const BoxConstraints(),
+                          tooltip: isBengali ? 'বিস্তারিত উচ্চারণ নির্দেশিকা' : 'Detailed Pronunciation Guide',
+                          onPressed: () => _showWordPronunciationDetailModal(context, w, isBengali),
+                        ),
                       ],
                     ),
-                  ),
-                ],
 
-                // Actionable Physical Makhraj & Mouth/Tongue Guidance
-                if (w.correctionAction != null && w.correctionAction!.isNotEmpty) ...[
-                  const SizedBox(height: 8),
-                  Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-                    decoration: BoxDecoration(
-                      color: NekiColors.emeraldPrimary.withValues(alpha: 0.15),
-                      borderRadius: BorderRadius.circular(8),
-                      border: Border.all(
-                        color: NekiColors.emeraldLight.withValues(alpha: 0.3),
-                        width: 1,
+                    const SizedBox(height: 8),
+
+                    // Side-by-Side Comparison: What Was Heard vs What It Should Have Been
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                      decoration: BoxDecoration(
+                        color: Colors.black.withValues(alpha: 0.35),
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(color: Colors.white10),
                       ),
-                    ),
-                    child: Row(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        const Icon(Icons.record_voice_over_rounded, size: 15, color: NekiColors.emeraldLight),
-                        const SizedBox(width: 8),
-                        Expanded(
-                          child: Text.rich(
-                            TextSpan(
+                      child: Row(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          // What was heard
+                          Expanded(
+                            child: Column(
                               children: [
-                                TextSpan(
-                                  text: isBengali ? 'সংশোধনের উপায়: ' : 'How to Fix: ',
+                                Text(
+                                  isBengali ? 'যা শোনা গেছে' : 'What Was Heard',
                                   style: const TextStyle(
-                                    fontSize: 12,
-                                    fontWeight: FontWeight.bold,
-                                    color: NekiColors.emeraldLight,
+                                    fontSize: 10.5,
+                                    fontWeight: FontWeight.w600,
+                                    color: Color(0xFFEF9A9A),
                                   ),
                                 ),
-                                TextSpan(
-                                  text: w.correctionAction!,
-                                  style: const TextStyle(
-                                    fontSize: 12,
-                                    color: Colors.white,
-                                    height: 1.35,
+                                const SizedBox(height: 4),
+                                Text(
+                                  hasSpokenWord ? w.spokenWord! : (isBengali ? 'বাদ পড়েছে' : 'Skipped'),
+                                  style: GoogleFonts.amiri(
+                                    fontSize: 20,
+                                    fontWeight: FontWeight.bold,
+                                    color: const Color(0xFFEF9A9A),
                                   ),
+                                  textAlign: TextAlign.center,
+                                  textDirection: TextDirection.rtl,
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                                const SizedBox(height: 2),
+                                Text(
+                                  spokenPronunciation,
+                                  style: TextStyle(
+                                    fontSize: 11,
+                                    fontWeight: FontWeight.w500,
+                                    fontStyle: isBengali ? FontStyle.normal : FontStyle.italic,
+                                    color: const Color(0xFFFFD54F),
+                                  ),
+                                  textAlign: TextAlign.center,
+                                  maxLines: 2,
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                                const SizedBox(height: 6),
+                                if (hasSpokenWord)
+                                  _buildWordTtsPillButton(
+                                    textToSpeak: w.spokenWord!,
+                                    buttonKey: 'mistake_heard_$mistakeId',
+                                    isBengali: isBengali,
+                                    accentColor: const Color(0xFFEF9A9A),
+                                  ),
+                              ],
+                            ),
+                          ),
+                          Container(
+                            width: 1,
+                            height: 90,
+                            margin: const EdgeInsets.symmetric(horizontal: 6),
+                            color: Colors.white12,
+                          ),
+                          // What it should have been
+                          Expanded(
+                            child: Column(
+                              children: [
+                                Text(
+                                  isBengali ? 'প্রত্যাশিত শব্দ' : 'Expected Word',
+                                  style: const TextStyle(
+                                    fontSize: 10.5,
+                                    fontWeight: FontWeight.w600,
+                                    color: Color(0xFF81C784),
+                                  ),
+                                ),
+                                const SizedBox(height: 4),
+                                Text(
+                                  w.arabicWord,
+                                  style: GoogleFonts.amiri(
+                                    fontSize: 20,
+                                    fontWeight: FontWeight.bold,
+                                    color: const Color(0xFF81C784),
+                                  ),
+                                  textAlign: TextAlign.center,
+                                  textDirection: TextDirection.rtl,
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                                const SizedBox(height: 2),
+                                Text(
+                                  expectedPronunciation,
+                                  style: TextStyle(
+                                    fontSize: 11,
+                                    fontWeight: FontWeight.w500,
+                                    fontStyle: isBengali ? FontStyle.normal : FontStyle.italic,
+                                    color: const Color(0xFF81C784),
+                                  ),
+                                  textAlign: TextAlign.center,
+                                  maxLines: 2,
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                                const SizedBox(height: 6),
+                                _buildWordTtsPillButton(
+                                  textToSpeak: w.arabicWord,
+                                  buttonKey: 'mistake_expected_$mistakeId',
+                                  isBengali: isBengali,
+                                  accentColor: const Color(0xFF81C784),
                                 ),
                               ],
                             ),
                           ),
-                        ),
-                      ],
+                        ],
+                      ),
                     ),
-                  ),
-                ],
-              ],
+
+                    // Issue Description / What went wrong
+                    if (issueText.isNotEmpty) ...[
+                      const SizedBox(height: 10),
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                        decoration: BoxDecoration(
+                          color: Colors.redAccent.withValues(alpha: 0.12),
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                        child: Row(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            const Icon(Icons.error_outline_rounded, size: 15, color: Colors.redAccent),
+                            const SizedBox(width: 6),
+                            Expanded(
+                              child: Text(
+                                issueText,
+                                style: const TextStyle(
+                                  fontSize: 12,
+                                  fontWeight: FontWeight.w600,
+                                  color: Color(0xFFFFCDD2),
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+
+                    // Actionable Physical Makhraj & Mouth/Tongue Guidance
+                    if (actionText.isNotEmpty) ...[
+                      const SizedBox(height: 8),
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                        decoration: BoxDecoration(
+                          color: NekiColors.emeraldPrimary.withValues(alpha: 0.15),
+                          borderRadius: BorderRadius.circular(8),
+                          border: Border.all(
+                            color: NekiColors.emeraldLight.withValues(alpha: 0.3),
+                            width: 1,
+                          ),
+                        ),
+                        child: Row(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            const Icon(Icons.record_voice_over_rounded, size: 15, color: NekiColors.emeraldLight),
+                            const SizedBox(width: 8),
+                            Expanded(
+                              child: Text.rich(
+                                TextSpan(
+                                  children: [
+                                    TextSpan(
+                                      text: isBengali ? 'সংশোধনের উপায়: ' : 'How to Fix: ',
+                                      style: const TextStyle(
+                                        fontSize: 12,
+                                        fontWeight: FontWeight.bold,
+                                        color: NekiColors.emeraldLight,
+                                      ),
+                                    ),
+                                    TextSpan(
+                                      text: actionText,
+                                      style: const TextStyle(
+                                        fontSize: 12,
+                                        color: Colors.white,
+                                        height: 1.35,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ],
+                ),
+              ),
             ),
           );
         }),
       ],
+    );
+  }
+
+  /// Trilingual pop-up guidance modal for word-level pronunciation diagnostics.
+  /// Displays the target Arabic word, heard speech, and precise tongue/mouth articulation
+  /// guidance in Arabic, English, and Bengali.
+  void _showWordPronunciationDetailModal(
+    BuildContext context,
+    VocalizedWordFeedback word,
+    bool isBengali,
+  ) {
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (modalContext) {
+        final isNeedsPractice = word.status == WordPronunciationStatus.needsPractice;
+        final accentColor = isNeedsPractice ? Colors.redAccent : const Color(0xFFFFB300);
+        final englishTrans = word.transliteration;
+        final bengaliTrans = BengaliPhoneticHelper.toBengaliPronunciation(englishTrans);
+        final issueEn = word.issueDescription ?? 'Word articulation divergence detected.';
+        final issueBn = word.issueDescriptionBn ?? (isBengali ? 'উচ্চারণে অসংগতি পাওয়া গেছে।' : issueEn);
+        final actionEn = word.correctionAction ?? 'Adjust tongue and mouth position according to authentic Tajweed.';
+        final actionBn = word.correctionActionBn ?? (isBengali ? 'সহীহ তেলাওয়াতকারীর ন্যায় মাখরাজ অনুযায়ী জিহ্বা ও ঠোঁট নিয়ন্ত্রণ করুন।' : actionEn);
+
+        return Container(
+          decoration: BoxDecoration(
+            color: const Color(0xFF161E1A),
+            borderRadius: const BorderRadius.vertical(top: Radius.circular(24)),
+            border: Border.all(color: NekiColors.goldLight.withValues(alpha: 0.3)),
+          ),
+          padding: EdgeInsets.only(
+            bottom: MediaQuery.of(modalContext).viewInsets.bottom + 24,
+            left: 20,
+            right: 20,
+            top: 16,
+          ),
+          child: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                // Drag handle
+                Center(
+                  child: Container(
+                    width: 40,
+                    height: 4,
+                    decoration: BoxDecoration(
+                      color: Colors.white24,
+                      borderRadius: BorderRadius.circular(2),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 16),
+
+                // Header
+                Row(
+                  children: [
+                    const Icon(Icons.info_outline_rounded, color: NekiColors.goldLight, size: 22),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: Text(
+                        isBengali ? 'উচ্চারণের বিস্তারিত বিশ্লেষণ' : 'Detailed Pronunciation Breakdown',
+                        style: const TextStyle(
+                          fontSize: 15.5,
+                          fontWeight: FontWeight.bold,
+                          color: NekiColors.goldLight,
+                        ),
+                      ),
+                    ),
+                    IconButton(
+                      icon: const Icon(Icons.close_rounded, color: Colors.white60, size: 20),
+                      onPressed: () => Navigator.pop(modalContext),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 12),
+
+                // Authentic Scripture Word vs Spoken Arabic Card
+                Container(
+                  padding: const EdgeInsets.all(14),
+                  decoration: BoxDecoration(
+                    color: Colors.white.withValues(alpha: 0.04),
+                    borderRadius: BorderRadius.circular(16),
+                    border: Border.all(color: accentColor.withValues(alpha: 0.4)),
+                  ),
+                  child: Column(
+                    children: [
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          Text(
+                            isBengali ? 'উচ্চারণ তুলনা' : 'Pronunciation Comparison',
+                            style: const TextStyle(fontSize: 11.5, fontWeight: FontWeight.bold, color: Colors.white70),
+                          ),
+                          Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                            decoration: BoxDecoration(
+                              color: accentColor.withValues(alpha: 0.2),
+                              borderRadius: BorderRadius.circular(6),
+                            ),
+                            child: Text(
+                              isNeedsPractice
+                                  ? (isBengali ? 'অনুশীলন প্রয়োজন' : 'Needs Practice')
+                                  : (isBengali ? 'উন্নতি সম্ভব' : 'Good Attempt'),
+                              style: TextStyle(
+                                fontSize: 10.5,
+                                fontWeight: FontWeight.bold,
+                                color: isNeedsPractice ? const Color(0xFFEF9A9A) : const Color(0xFFFFD54F),
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 10),
+                      // Side-by-side comparison
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 12),
+                        decoration: BoxDecoration(
+                          color: Colors.black.withValues(alpha: 0.35),
+                          borderRadius: BorderRadius.circular(12),
+                          border: Border.all(color: Colors.white10),
+                        ),
+                        child: Row(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            // What was heard
+                            Expanded(
+                              child: Column(
+                                children: [
+                                  Text(
+                                    isBengali ? 'যা শোনা গেছে' : 'What Was Heard',
+                                    style: const TextStyle(
+                                      fontSize: 10.5,
+                                      fontWeight: FontWeight.w600,
+                                      color: Color(0xFFEF9A9A),
+                                    ),
+                                  ),
+                                  const SizedBox(height: 4),
+                                  Text(
+                                    (word.spokenWord != null && word.spokenWord!.isNotEmpty)
+                                        ? word.spokenWord!
+                                        : (isBengali ? 'বাদ পড়েছে' : 'Skipped'),
+                                    style: GoogleFonts.amiri(
+                                      fontSize: 22,
+                                      fontWeight: FontWeight.bold,
+                                      color: const Color(0xFFEF9A9A),
+                                    ),
+                                    textAlign: TextAlign.center,
+                                    textDirection: TextDirection.rtl,
+                                    overflow: TextOverflow.ellipsis,
+                                  ),
+                                  const SizedBox(height: 3),
+                                  Text(
+                                    (word.spokenWord != null && word.spokenWord!.isNotEmpty)
+                                        ? _getPronunciationForWord(word.spokenWord!, isBengali)
+                                        : (isBengali ? '(অনুপস্থিত)' : '(Omitted)'),
+                                    style: TextStyle(
+                                      fontSize: 11.5,
+                                      fontWeight: FontWeight.w500,
+                                      fontStyle: isBengali ? FontStyle.normal : FontStyle.italic,
+                                      color: const Color(0xFFFFD54F),
+                                    ),
+                                    textAlign: TextAlign.center,
+                                    maxLines: 2,
+                                    overflow: TextOverflow.ellipsis,
+                                  ),
+                                  const SizedBox(height: 8),
+                                  if (word.spokenWord != null && word.spokenWord!.isNotEmpty)
+                                    _buildWordTtsPillButton(
+                                      textToSpeak: word.spokenWord!,
+                                      buttonKey: 'detail_spoken_${word.arabicWord}',
+                                      isBengali: isBengali,
+                                      accentColor: const Color(0xFFEF9A9A),
+                                    ),
+                                ],
+                              ),
+                            ),
+                            Container(
+                              width: 1,
+                              height: 100,
+                              margin: const EdgeInsets.symmetric(horizontal: 6),
+                              color: Colors.white12,
+                            ),
+                            // What it should have been
+                            Expanded(
+                              child: Column(
+                                children: [
+                                  Text(
+                                    isBengali ? 'প্রত্যাশিত শব্দ' : 'Expected Word',
+                                    style: const TextStyle(
+                                      fontSize: 10.5,
+                                      fontWeight: FontWeight.w600,
+                                      color: Color(0xFF81C784),
+                                    ),
+                                  ),
+                                  const SizedBox(height: 4),
+                                  Text(
+                                    word.arabicWord,
+                                    style: GoogleFonts.amiri(
+                                      fontSize: 22,
+                                      fontWeight: FontWeight.bold,
+                                      color: const Color(0xFF81C784),
+                                    ),
+                                    textAlign: TextAlign.center,
+                                    textDirection: TextDirection.rtl,
+                                    overflow: TextOverflow.ellipsis,
+                                  ),
+                                  const SizedBox(height: 3),
+                                  Text(
+                                    _getPronunciationForWord(
+                                      word.arabicWord,
+                                      isBengali,
+                                      fallbackTransliteration: word.transliteration,
+                                    ),
+                                    style: TextStyle(
+                                      fontSize: 11.5,
+                                      fontWeight: FontWeight.w500,
+                                      fontStyle: isBengali ? FontStyle.normal : FontStyle.italic,
+                                      color: const Color(0xFF81C784),
+                                    ),
+                                    textAlign: TextAlign.center,
+                                    maxLines: 2,
+                                    overflow: TextOverflow.ellipsis,
+                                  ),
+                                  const SizedBox(height: 8),
+                                  _buildWordTtsPillButton(
+                                    textToSpeak: word.arabicWord,
+                                    buttonKey: 'detail_expected_${word.arabicWord}',
+                                    isBengali: isBengali,
+                                    accentColor: const Color(0xFF81C784),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+
+                const SizedBox(height: 14),
+
+                if (isBengali)
+                  // Bangla Pronunciation Guidance
+                  Container(
+                    padding: const EdgeInsets.all(14),
+                    decoration: BoxDecoration(
+                      color: NekiColors.emeraldPrimary.withValues(alpha: 0.12),
+                      borderRadius: BorderRadius.circular(14),
+                      border: Border.all(color: NekiColors.emeraldLight.withValues(alpha: 0.3)),
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                          decoration: BoxDecoration(
+                            color: NekiColors.emeraldPrimary.withValues(alpha: 0.3),
+                            borderRadius: BorderRadius.circular(6),
+                          ),
+                          child: const Text(
+                            'বাংলা উচ্চারণ নির্দেশিকা',
+                            style: TextStyle(fontSize: 11.5, fontWeight: FontWeight.bold, color: NekiColors.emeraldLight),
+                          ),
+                        ),
+                        if (bengaliTrans.isNotEmpty) ...[
+                          const SizedBox(height: 6),
+                          Text(
+                            'উচ্চারণ: $bengaliTrans',
+                            style: const TextStyle(
+                              fontSize: 13,
+                              fontWeight: FontWeight.bold,
+                              color: Color(0xFFFFD54F),
+                              height: 1.35,
+                            ),
+                          ),
+                        ],
+                        const SizedBox(height: 8),
+                        Text(
+                          'ভুল বিশ্লেষণ: $issueBn',
+                          style: const TextStyle(fontSize: 12.5, color: Color(0xFFFFCDD2), height: 1.3),
+                        ),
+                        const SizedBox(height: 6),
+                        Text.rich(
+                          TextSpan(
+                            children: [
+                              const TextSpan(
+                                text: 'উচ্চারণ সংশোধনের উপায়: ',
+                                style: TextStyle(fontSize: 12.5, fontWeight: FontWeight.bold, color: NekiColors.emeraldLight),
+                              ),
+                              TextSpan(
+                                text: actionBn,
+                                style: const TextStyle(fontSize: 12.5, color: Colors.white, height: 1.35),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ),
+                  )
+                else
+                  // English Pronunciation Guidance
+                  Container(
+                    padding: const EdgeInsets.all(14),
+                    decoration: BoxDecoration(
+                      color: Colors.white.withValues(alpha: 0.03),
+                      borderRadius: BorderRadius.circular(14),
+                      border: Border.all(color: Colors.white10),
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                          decoration: BoxDecoration(
+                            color: Colors.white.withValues(alpha: 0.08),
+                            borderRadius: BorderRadius.circular(6),
+                          ),
+                          child: const Text(
+                            'English Pronunciation Guide',
+                            style: TextStyle(fontSize: 11.5, fontWeight: FontWeight.bold, color: Colors.white),
+                          ),
+                        ),
+                        if (englishTrans.isNotEmpty) ...[
+                          const SizedBox(height: 6),
+                          Text(
+                            'Pronunciation: $englishTrans',
+                            style: const TextStyle(
+                              fontSize: 13,
+                              fontStyle: FontStyle.italic,
+                              color: NekiColors.goldLight,
+                              height: 1.35,
+                            ),
+                          ),
+                        ],
+                        const SizedBox(height: 8),
+                        Text(
+                          'Discrepancy: $issueEn',
+                          style: const TextStyle(fontSize: 12.5, color: Color(0xFFFFCDD2), height: 1.3),
+                        ),
+                        const SizedBox(height: 6),
+                        Text.rich(
+                          TextSpan(
+                            children: [
+                              const TextSpan(
+                                text: 'How to Fix: ',
+                                style: TextStyle(fontSize: 12.5, fontWeight: FontWeight.bold, color: NekiColors.emeraldLight),
+                              ),
+                              TextSpan(
+                                text: actionEn,
+                                style: const TextStyle(fontSize: 12.5, color: Colors.white, height: 1.35),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+
+                const SizedBox(height: 16),
+
+                // Listen to Authentic Audio Button
+                OutlinedButton.icon(
+                  onPressed: () {
+                    _playAuthenticAudio();
+                  },
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: NekiColors.goldLight,
+                    side: const BorderSide(color: NekiColors.goldLight),
+                    padding: const EdgeInsets.symmetric(vertical: 10),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                  ),
+                  icon: const Icon(Icons.volume_up_rounded, size: 18),
+                  label: Text(
+                    isBengali ? 'আবার শুনুন' : 'Listen Again',
+                    style: const TextStyle(fontSize: 13, fontWeight: FontWeight.bold),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
     );
   }
 }

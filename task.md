@@ -8,10 +8,10 @@
 
 | Metric | Status | Details |
 | :--- | :---: | :--- |
-| **Test Suite** | ![152/152 Passing](https://img.shields.io/badge/Tests-152%2F152%20Passing-brightgreen?style=flat-square) | 100% automated test coverage across unit, widget, and audio flows |
+| **Test Suite** | ![161/161 Passing](https://img.shields.io/badge/Tests-161%2F161%20Passing-brightgreen?style=flat-square) | 100% automated test coverage across unit, widget, streaming aligner, and audio flows |
 | **Static Analysis** | ![0 Issues](https://img.shields.io/badge/Analyzer-0%20Issues-brightgreen?style=flat-square) | Zero lint warnings or errors via `flutter analyze` |
 | **Active Branch** | ![main](https://img.shields.io/badge/Branch-main-blue?style=flat-square) | All features merged and pushed to GitHub |
-| **Milestone Progress** | ![63% Complete](https://img.shields.io/badge/Roadmap-10%20%2F%2016%20Completed%20(63%25)-green?style=flat-square) | Core recitations, prayer calculation engine, bookmarks & audio sync complete |
+| **Milestone Progress** | ![65% Complete](https://img.shields.io/badge/Roadmap-10.5%20%2F%2016%20Completed%20(65%25)-green?style=flat-square) | Core recitations, real-time recitation checking, prayer calculation engine, bookmarks & audio sync complete |
 
 ---
 
@@ -25,7 +25,7 @@
   - [M5: Hadith Library & Voiced Chapters](#milestone-5-hadith-system--bukhari-audio)
   - [M6: Persistent Audio Player](#milestone-6-minimized-playback-system-redesign)
   - [M7: Digital Tasbih Tool](#milestone-7-digital-tasbih-tool)
-  - [M8: Pronunciation & Tajweed Studio](#milestone-8-pronunciation--tajweed-studio-dual-engine-ai)
+  - [M8: Pronunciation & Tajweed Studio (Dual-Engine AI & Real-Time Tracking)](#milestone-8-pronunciation--tajweed-studio-dual-engine-ai--real-time-tracking)
   - [M9: Testing, Quality Assurance & Security](#milestone-9-testing-quality-assurance--security)
   - [M10: Namaz & Prayer Times](#milestone-10-namaz--prayer-times)
 - [Upcoming Roadmap (11 – 16)](#-upcoming-roadmap)
@@ -101,25 +101,28 @@
 - [x] **Preset & Custom Targets**: Quick presets for 33, 99, 100, or unlimited counts.
 - [x] **Authentic Supplication Presets**: Pre-loaded with SubhanAllah, Alhamdulillah, Allahu Akbar, Astaghfirullah, and custom phrases.
 
-### Milestone 8: Pronunciation & Tajweed Studio (Dual-Engine AI)
+### Milestone 8: Pronunciation & Tajweed Studio (Dual-Engine AI & Real-Time Tracking)
+- [x] **Dual Recitation Modes**:
+  - **Single Ayah Mode**: Line-by-line targeted recitation checking for precision learning.
+  - **Whole Surah Mode**: Continuous multi-verse tracking that automatically advances across all Ayahs in the chapter with a live progress indicator (`Ayah X of Y • Z%`).
+- [x] **Real-Time Karaoke Alignment (`StreamingWordAligner`)**:
+  - Live token alignment streaming directly from on-device speech recognition without latency.
+  - Visual word tracking: Completed words turn emerald green, active target word glows with a pulsating gold focus box, and upcoming words remain soft neutral.
+- [x] **Real-Time Mistake Pausing & Live Retry HUD**:
+  - Automatically pauses recitation evaluation instantly when an error occurs mid-Ayah or mid-Surah.
+  - **Mistake Intervention HUD**: Displays exact expected word vs. what was heard, letter-level phonetic breakdown, and physical mouth/tongue/Makhraj coaching instructions.
+  - **Live Retry & Skip**: User can immediately retry pronouncing the flagged word; once pronounced correctly, the session seamlessly resumes from that exact point without losing prior progress. A "Skip Word" fallback is also available.
+- [x] **Automatic Stop Detection**:
+  - Detects when the user finishes reciting the Ayah (or the last Ayah of the Surah) with a 900ms silence boundary, cleanly stopping evaluation and presenting the final performance scorecard without requiring manual stop taps.
 - [x] **Acoustic Speech Recognition**: Cloud Whisper Large-v3 via Groq API (free tier, 2,000 req/day) delivering precision speech recognition without artificial prompt bias.
 - [x] **Offline Speech Fallback**: On-device native speech recognition ensuring zero downtime when offline.
-- [x] **Phonetic & Tajweed Diagnostics**: Deep letter-level diagnostic engine identifying:
-  - Emphatic letters (`ص` vs `س`, `ط` vs `ت`)
-  - Guttural/throat letters (`ع`, `ح`, `خ`, `غ`)
-  - Interdentals (`ث`, `ذ`)
-  - Missing Qalqalah bounces (`[قطبجد]`)
-  - Unheld Shaddah (`ّ`) and omitted syllables
-- [x] **"Where You Went Wrong & How to Fix" Guidance**: High-contrast diagnostic feedback cards detailing exact phonetic discrepancies paired with physical mouth/tongue/Makhraj instructions.
-- [x] **Zero-Scroll Sticky Top Action Bar**:
-  - Pinned directly beneath the studio header.
-  - Previous (`◀`) and Next (`▶`) Ayah navigation controls without scrolling.
-  - Instant `[🔄 Try Again]` primary button and `[🔊 Master Reciter]` reference audio button.
+- [x] **Phonetic & Tajweed Diagnostics**: Deep letter-level diagnostic engine identifying emphatic letters, gutturals, interdentals, missing Qalqalah, and unheld Shaddah.
+- [x] **Zero-Scroll Sticky Top Action Bar**: Pinned Ayah navigation (`◀` / `▶`), `[🔄 Try Again]`, and `[🔊 Master Reciter]`.
 - [x] **1-Tap Bilingual Switcher**: `[বাং / EN]` toggle in the top bar to swap translations and phonetic pronunciation scripts instantly.
 - [x] **Universal Card Integration**: One-tap studio launcher accessible on every Quran Ayah card, Dua card, and Hadith view.
 
 ### Milestone 9: Testing, Quality Assurance & Security
-- [x] **143 Automated Tests**: 100% test pass rate across unit, widget, audio completion, phonetic matching, navigation, and prayer calculation suites.
+- [x] **161 Automated Tests**: 100% test pass rate across unit, widget, streaming aligner, audio completion, phonetic matching, navigation, and prayer calculation suites.
 - [x] **Zero Static Analysis Warnings**: Clean `flutter analyze` with 0 issues.
 - [x] **Security Hardening**:
   - Secure `.env` configuration loader with dynamic path resolution and compile-time fallback.

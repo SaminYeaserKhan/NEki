@@ -63,11 +63,11 @@ class ApiKeys {
   static bool? _inMemoryPromptBias;
 
   /// Whether Whisper prompt conditioning is enabled.
-  /// Defaults to false (strict acoustic mode to detect misarticulations like Qaf vs Kaf).
+  /// Defaults to true so Whisper's acoustic decoder is conditioned on authentic Quranic scripture.
   static Future<bool> isPromptBiasEnabled() async {
     if (_inMemoryPromptBias != null) return _inMemoryPromptBias!;
     final prefs = await SharedPreferences.getInstance();
-    _inMemoryPromptBias = prefs.getBool(_promptBiasPrefKey) ?? false;
+    _inMemoryPromptBias = prefs.getBool(_promptBiasPrefKey) ?? true;
     return _inMemoryPromptBias!;
   }
 
