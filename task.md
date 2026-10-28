@@ -8,7 +8,7 @@
 
 | Metric | Status | Details |
 | :--- | :---: | :--- |
-| **Test Suite** | ![161/161 Passing](https://img.shields.io/badge/Tests-161%2F161%20Passing-brightgreen?style=flat-square) | 100% automated test coverage across unit, widget, streaming aligner, and audio flows |
+| **Test Suite** | ![161/161 Passing](https://img.shields.io/badge/Tests-161%2F161%20Passing-brightgreen?style=flat-square) | Automated tests across unit, widget, streaming aligner, and audio flows |
 | **Static Analysis** | ![0 Issues](https://img.shields.io/badge/Analyzer-0%20Issues-brightgreen?style=flat-square) | Zero lint warnings or errors via `flutter analyze` |
 | **Active Branch** | ![main](https://img.shields.io/badge/Branch-main-blue?style=flat-square) | All features merged and pushed to GitHub |
 | **Milestone Progress** | ![65% Complete](https://img.shields.io/badge/Roadmap-10.5%20%2F%2016%20Completed%20(65%25)-green?style=flat-square) | Core recitations, real-time recitation checking, prayer calculation engine, bookmarks & audio sync complete |
